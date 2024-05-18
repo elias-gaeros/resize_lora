@@ -19,7 +19,7 @@ def parse_score_recipe(recipe):
         if key in weights:
             weights[key] = float(value)
         elif key == "size":
-            size = int(value)
+            size = float(value)
         elif key == "thr":
             threshold = float(value)
         else:
@@ -27,6 +27,11 @@ def parse_score_recipe(recipe):
 
     if size is None and threshold is None:
         raise ValueError("Either 'size' or 'thr' must be specified in the recipe")
+
+    wsum = sum(weights.values())
+    if wsum == 0.0:
+        raise ValueError("At least one score type must be specified")
+    weights = {k: v / wsum for k, v in weights.items()}
 
     return weights, size, threshold
 

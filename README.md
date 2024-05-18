@@ -58,7 +58,7 @@ Filters out the singular values that are 10 times smaller or more than the spect
 - `-o`, `--output_folder` (required): Folder to save the output files.
 - `-t`, `--output_dtype`: Output bit-width, either 32 or 16 (default: 16).
 - `-d`, `--device`: Device to run the computations on (default: 'cuda' if available, otherwise 'cpu').
-- `-r`, `--score_recipes`: Score/threshold recipes separated by colons (`:`). Each recipe specifies weights and either a target size or threshold. The default is `spn_ckpt=1,thr=-1`.
+- `-r`, `--score_recipes`: Score/threshold recipes separated by colons (`:`). Each recipe specifies weights and either a target size or threshold. The default is `spn_ckpt=1,thr=-1.2`.
 - `-v`, `--verbose`: Increase verbosity level (e.g., `-v` for `INFO`, `-vv` for `DEBUG`).
 
 ### Recipe Format
@@ -81,13 +81,13 @@ Unlike `spn_lora`, `spn_ckpt` can remove LoRA layers completely. It is expected 
 
 ```sh
 python resize_lora.py /path/to/checkpoint.safetensors /path/to/loras/*.safetensors -o /path/to/output/folder \
-    -v -r spn_lora=1,thr=-0.7:spn_ckpt=1,thr=-1:subspace=0.5,spn_ckpt=0.5,size=32
+    -v -r spn_lora=1,thr=-0.7:spn_ckpt=1,thr=-1.2:subspace=0.5,spn_ckpt=0.5,size=32
 ```
 
 Process multiple LoRAs from a folder. For each, outputs:
 
 - `spn_lora=1,thr=-0.7`: a LoRA with singular values greater than $10^{-0.7} \simeq $ 1/5th of the largest one. This is equivalent to `kohya-ss/sd-scripts/networks/resize_lora.py --dynamic_method="sv_ratio" --dynamic_param=5`.
-- `spn_ckpt=1,thr=-1`: a LoRA with singular values greater than 1/10th of the largest singular value of the base layer (spectral norm). This is the default and recommended setting for a strong compression with relatively limited effects on the quality.
+- `spn_ckpt=1,thr=-1.2`: a LoRA with singular values greater than $10^{-1.2} \simeq $ 1/16th of the largest singular value of the base layer (spectral norm). This is the default and recommended setting for a strong compression with relatively limited effects on the quality.
 - `subspace=0.5,spn_ckpt=0.5,size=32`: a 32MiB LoRA with a dynamic threshold applied on the geometric mean of:
   - The singular values divided by the scaling of base layer on the singular subspaces.
   - The singular values divided by the spectral norm of the base layer.
@@ -96,7 +96,7 @@ Process multiple LoRAs from a folder. For each, outputs:
 
 (TBD) General procedure:
 
-1. Compress a LoRA with default parameters `-r spn_ckpt=1,thr=-1`, note the file size.
+1. Compress a LoRA with default parameters `-r spn_ckpt=1,thr=-1.2`, note the file size.
 2. Compress the same original LoRA with `-r spn_lora=1,size=<file size of the first output>`, note the threshold.
 3. Compress the same original LoRA using [`kohya-ss/sd-scripts/networks/resize_lora.py`](https://github.com/kohya-ss/sd-scripts/blob/main/networks/resize_lora.py)` --dynamic_method="sv_ratio" --dynamic_param=<10**-threshold noted from 2.>`.
 

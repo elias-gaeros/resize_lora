@@ -46,7 +46,7 @@ cd resize_lora
 ### Basic Command
 
 ```sh
-python resize_lora_models.py /path/to/checkpoint.safetensors /path/to/lora.safetensors -o /path/to/output/folder
+python resize_lora.py /path/to/checkpoint.safetensors /path/to/lora.safetensors -o /path/to/output/folder
 ```
 
 Filters out the singular values that are 10 times smaller or more than the spectral norm of the base layer from the checkpoint.
@@ -80,7 +80,7 @@ Unlike `spn_lora`, `spn_ckpt` can remove LoRA layers completely. It is expected 
 ### Advanced Example
 
 ```sh
-python resize_lora_models.py /path/to/checkpoint.safetensors /path/to/loras/*.safetensors -o /path/to/output/folder \
+python resize_lora.py /path/to/checkpoint.safetensors /path/to/loras/*.safetensors -o /path/to/output/folder \
     -v -r spn_lora=1,thr=-0.7:spn_ckpt=1,thr=-1:subspace=0.5,spn_ckpt=0.5,size=32
 ```
 

@@ -11,29 +11,35 @@ from loralib import PairedLoraModel, BaseCheckpoint, JsonCache
 
 def parse_score_recipe(recipe):
     weights = {"spn_lora": 0.0, "subspace": 0.0, "spn_ckpt": 0.0}
+    size = None
+    threshold = None
 
     for part in recipe.split(","):
         key, _, value = part.partition("=")
         if key in weights:
             weights[key] = float(value)
+        elif key == "size":
+            size = int(value)
+        elif key == "thr":
+            threshold = float(value)
         else:
-            raise ValueError("denominator type unknown: %s", key)
-    return weights
+            raise ValueError("Unknown key in recipe: %s" % key)
+
+    if size is None and threshold is None:
+        raise ValueError("Either 'size' or 'thr' must be specified in the recipe")
+
+    return weights, size, threshold
 
 
 def process_lora_model(
     paired: PairedLoraModel,
     recipes,
     output_folder,
-    target_size=None,
-    threshold=-1,
     device=None,
     compute_dtype=pt.float32,
     output_dtype=pt.float16,
 ):
     print_scores = logging.root.isEnabledFor(logging.INFO)
-    needs_flat_sizes = target_size is not None
-    needs_flat_scores = print_scores or needs_flat_sizes
 
     compute_kwargs = dict(dtype=compute_dtype, device=device, non_blocking=True)
     checkpoint = paired.checkpoint
@@ -49,7 +55,10 @@ def process_lora_model(
         dlora_layers.append(dlora)
 
     for recipe in recipes:
-        score_weights = parse_score_recipe(recipe)
+        score_weights, target_size, threshold = parse_score_recipe(recipe)
+        needs_flat_sizes = target_size is not None
+        needs_flat_scores = print_scores or needs_flat_sizes
+
         score_layers = {}
         all_scores = []
         all_sizes = []
@@ -153,24 +162,11 @@ def main():
         help="Device to run the computations on",
     )
     parser.add_argument(
-        "-s",
-        "--target_size",
-        type=int,
-        help="Target output size in MiBs",
-    )
-    parser.add_argument(
-        "-t",
-        "--threshold",
-        type=float,
-        default=-1,
-        help="Score threshold, used if target_size is not specified",
-    )
-    parser.add_argument(
         "-r",
         "--score_recipes",
         type=str,
-        default="spn_ckpt=1",
-        help="Score recipes separated by ':' in the format spn_ckpt=X,spn_lora=Y,subspace=Z:spn_ckpt=...",
+        default="spn_ckpt=1,thr=-1",
+        help="Score recipes separated by ':' in the format spn_ckpt=X,spn_lora=Y,subspace=Z,size=S:spn_ckpt=...",
     )
     parser.add_argument(
         "-v",
@@ -198,8 +194,6 @@ def main():
             paired=paired,
             recipes=score_recipes,
             output_folder=output_folder,
-            threshold=args.threshold,
-            target_size=args.target_size,
             device=args.device,
         )
 

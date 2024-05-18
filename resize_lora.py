@@ -5,6 +5,7 @@ from pathlib import Path
 from tqdm import tqdm
 import torch as pt
 import safetensors.torch
+import json
 
 from loralib import PairedLoraModel, BaseCheckpoint, JsonCache
 
@@ -61,8 +62,7 @@ def process_lora_model(
 
     for recipe in recipes:
         score_weights, target_size, threshold = parse_score_recipe(recipe)
-        needs_flat_sizes = target_size is not None
-        needs_flat_scores = print_scores or needs_flat_sizes
+        needs_flat_scores = print_scores or target_size is not None
 
         score_layers = {}
         all_scores = []
@@ -88,7 +88,7 @@ def process_lora_model(
 
             if needs_flat_scores:
                 all_scores.append(scores)
-            if needs_flat_sizes:
+            if target_size is not None:
                 dim_size = dlora.dim_size(output_dtype.itemsize)
                 all_sizes.append(
                     pt.tile(pt.scalar_tensor(dim_size, dtype=pt.int32), (dlora.dim,))
@@ -96,12 +96,12 @@ def process_lora_model(
 
         if needs_flat_scores:
             all_scores = pt.cat(all_scores)
-        if needs_flat_sizes:
+        if target_size is not None:
             all_scores, order = all_scores.sort(descending=True)
             all_sizes = pt.cat(all_sizes)
             all_sizes = all_sizes[order]
             threshold = all_scores[
-                pt.searchsorted(all_sizes.cumsum(0), target_size << 20).item()
+                pt.searchsorted(all_sizes.cumsum(0), target_size * (1 << 20)).item()
             ]
             logging.info("Selected threshold: %.3f", threshold)
 
@@ -123,13 +123,20 @@ def process_lora_model(
                 "dim: %s->%s\t%s", mask.shape[0], mask.sum().item(), dlora.name
             )
 
-        recipe_fn = recipe.replace(",", "_").replace("=", "")
-        output_path = output_folder / (
-            f"{paired.lora_path.stem}_th{-threshold:.2f}_{recipe_fn}.safetensors"
-        )
+        metadata = paired.lora_fd.metadata()
         metadata = paired.lora_fd.metadata()
         metadata["resize_threshold"] = f"{threshold:.3f}"
-        metadata["resize_recipe"] = recipe
+
+        recipe_fn = [f"{k}{v:.2f}" for k, v in score_weights.items() if v != 0]
+        if target_size is not None:
+            recipe_fn.append(f"size{target_size:.1f}")
+            metadata["resize_size"] = f"{target_size:.1f}"
+        metadata["resize_weights"] = json.dumps(score_weights)
+        recipe_fn = "_".join(recipe_fn)
+        output_path = output_folder / (
+            f"{paired.lora_path.stem}_th{threshold:.2f}_{recipe_fn}.safetensors"
+        )
+
         logging.info("Saving %s", output_path)
         safetensors.torch.save_file(
             sd,

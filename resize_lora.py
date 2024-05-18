@@ -155,6 +155,14 @@ def main():
         help="Folder to save the output files",
     )
     parser.add_argument(
+        "-t",
+        "--output_dtype",
+        type=str,
+        choices=["16", "32"],
+        default="16",
+        help="Output dtype: 16 for float16, 32 for float32",
+    )
+    parser.add_argument(
         "-d",
         "--device",
         type=str,
@@ -180,6 +188,7 @@ def main():
     log_level = logging.WARNING - (10 * args.verbose)
     logging.basicConfig(level=log_level)
     output_folder = Path(args.output_folder)
+    output_dtype = pt.float16 if args.output_dtype == "16" else pt.float32
     score_recipes = args.score_recipes.split(":")
 
     spectral_norms_cache = JsonCache(
@@ -194,6 +203,7 @@ def main():
             paired=paired,
             recipes=score_recipes,
             output_folder=output_folder,
+            output_dtype=output_dtype,
             device=args.device,
         )
 

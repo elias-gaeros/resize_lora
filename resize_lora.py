@@ -61,18 +61,6 @@ def process_lora_model(
                 scores += score_weights["subspace"] * pt.log10(
                     dlora.S / dlora.compute_subspace_scales(W_base).abs().cpu()
                 )
-                if pt.any(pt.isnan(scores)) or pt.any(pt.isinf(scores)):
-                    print("dlora.S", dlora.S)
-                    print(
-                        "subscape_scales", dlora.compute_subspace_scales(W_base).cpu()
-                    )
-                    print(dlora.S / dlora.compute_subspace_scales(W_base).cpu())
-                    print(
-                        score_weights["subspace"]
-                        * pt.log10(
-                            dlora.S / dlora.compute_subspace_scales(W_base).cpu()
-                        )
-                    )
             if abs(score_weights["spn_ckpt"]) > 1e-6:
                 scores += score_weights["spn_ckpt"] * pt.log10(
                     dlora.S

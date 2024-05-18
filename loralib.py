@@ -106,7 +106,7 @@ class BaseCheckpoint:
             return sn
         if weights is None:
             weights = self.get_weights(layer).to(dtype=dtype, **kwargs)
-        sn = pt.svd_lowrank(weights, q=1, niter=niter)[1][0].cpu().item()
+        sn = pt.svd_lowrank(weights.flatten(start_dim=1), q=1, niter=niter)[1][0].cpu().item()
         cache[layer] = sn
         return sn
 

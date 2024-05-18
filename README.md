@@ -1,6 +1,6 @@
 # LoRA Resize Tool
 
-This tool compresses SDXL LoRA models while experimenting with new methods for selecting singular values. The proposed method scores the singular values of the LoRA layers relative to the spectral norm of the corresponding layers from the base model checkpoint. This score is computed as $\sigma_i(BA) / \sigma_{\text{max}}(W_{\text{ckpt}})$, where $\sigma_i(BA)$ represents the singular values of the LoRA layer, and $\sigma_{\text{max}}(W_{\text{ckpt}})$ is the maximum singular value (spectral norm) of the base layer from the checkpoint.
+This tool compresses SDXL LoRA models while experimenting with new methods for selecting singular values. The proposed method scores the singular values of the LoRA layers relative to the spectral norm of the corresponding layers from the base model checkpoint. This score, called `spn_ckpt`, is computed as $\sigma_i(BA) / \sigma_{\text{max}}(W_{\text{ckpt}})$, where $\sigma_i(BA)$ represents the singular values of the LoRA layer, and $\sigma_{\text{max}}(W_{\text{ckpt}})$ is the maximum singular value (spectral norm) of the base layer from the checkpoint.
 
 ## Table of Contents
 
@@ -66,7 +66,7 @@ Filters out the singular values that are 10 times smaller or more than the spect
 The score recipe string is a comma-separated list of key-value pairs. It specifies the weights for the geometric average of various score metrics and the threshold or the target file size. Valid keys are:
 
 - `spn_ckpt`: Weight for the score relative to the spectral norm of the layer from the checkpoint. The score is $\sigma_i(BA) / \sigma_\text{max}\left(W_\text{ckpt}\right)$.
-- `spn_lora`: Weight for the score relative to the spectral norm of the layer from the LoRA model. The score is $\sigma_i(BA) / \sigma_\text{max}\left(W_\text{ckpt}\right)$.
+- `spn_lora`: Weight for the score relative to the spectral norm of the layer from the LoRA model. The score is $\sigma_i(BA) / \sigma_\text{max}\left(BA\right)$.
 - `subspace`: Weight for the subspace score, computed as $\sigma_i(BA) / \left\langle \mathbf{u}_i, W\_\text{ckpt} \mathbf{v}_i \right\rangle$.
 - `size`: Target output size in MiBs (required if `thr` is not specified).
 - `thr`: Log base 10 threshold for scores (required if `size` is not specified). A threshold of -1 (the default) will select the singular values $> 10^{-1} \times \text{reference}$, at least 1/10th of the reference. Typically negative except for `subspace` denominator.
@@ -86,7 +86,7 @@ python resize_lora_models.py /path/to/checkpoint.safetensors /path/to/loras/*.sa
 
 Process multiple LoRAs from a folder. For each, outputs:
 
-- `spn_lora=1,thr=-0.7`: a LoRA with singular values greater than $10^{-0.7} \simeq 1 / 5$ than the largest one. This is equivalent to `kohya-ss/sd-scripts/networks/resize_lora.py --dynamic_method="sv_ratio" --dynamic_param=5`.
+- `spn_lora=1,thr=-0.7`: a LoRA with singular values greater than $10^{-0.7} \simeq $ 1/5th of the largest one. This is equivalent to `kohya-ss/sd-scripts/networks/resize_lora.py --dynamic_method="sv_ratio" --dynamic_param=5`.
 - `spn_ckpt=1,thr=-1`: a LoRA with singular values greater than 1/10th of the largest singular value of the base layer (spectral norm). This is the default and recommended setting for a strong compression with relatively limited effects on the quality.
 - `subspace=0.5,spn_ckpt=0.5,size=32`: a 32MiB LoRA with a dynamic threshold applied on the geometric mean of:
   - The singular values divided by the scaling of base layer on the singular subspaces.

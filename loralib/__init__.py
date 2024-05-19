@@ -1,65 +1,25 @@
 from pathlib import Path
 import logging
 
-import torch as pt
+import torch
 import safetensors.torch
-import json
 
-UNET_PREFIX = "model.diffusion_model."
-TE_PREFIXES = [
-    "conditioner.embedders.0.transformer.text_model.encoder.layers.",
-    "conditioner.embedders.1.model.transformer.resblocks.",
-]
-LORA_UNET_PREFIX = "lora_unet_"
-LORA_TE_PREFIXES = [
-    "lora_te1_text_model_encoder_layers_",
-    "lora_te2_text_model_encoder_layers_",
-]
+from .utils import cached, JsonCache
+from .num_utils import load_lora_layer, fast_decompose
+from .sdxl_mapper import get_sdxl_lora_keys
 
 
-def get_sdxl_lora_keys(base_key):
-    layer_name = base_key.removesuffix(".weight")
-
-    if layer_name.startswith(UNET_PREFIX):
-        return LORA_UNET_PREFIX + layer_name.removeprefix(UNET_PREFIX).replace(".", "_")
-    lora_keys = None
-    for te_prefix, lora_te_prefix in zip(TE_PREFIXES, LORA_TE_PREFIXES):
-        if layer_name.startswith(te_prefix):
-            assert lora_keys is None
-            layer_name = lora_te_prefix + layer_name.removeprefix(te_prefix).replace(
-                ".", "_"
-            )
-
-            if te_prefix is TE_PREFIXES[0]:
-                lora_keys = layer_name  # CLIP L is easy
-            else:  # CLIP G
-                if "attn_in_proj_weight" in layer_name:
-                    lora_keys = layer_name.replace("_attn_in_proj_weight", "_self_attn")
-                    lora_keys = [
-                        f"{lora_keys}_{chunk_name}_proj" for chunk_name in "kqv"
-                    ]
-                elif layer_name.endswith("_attn_out_proj"):
-                    lora_keys = layer_name.replace(
-                        "_attn_out_proj", "_self_attn_out_proj"
-                    )
-                elif "_ln_" in layer_name:
-                    lora_keys = layer_name.replace("_ln_", "_layer_norm")
-                elif "_mlp_" in layer_name:
-                    lora_keys = layer_name.replace("_c_fc", "_fc1").replace(
-                        "_c_proj", "_fc2"
-                    )
-    return lora_keys
+__all__ = ["BaseCheckpoint", "PairedLoraModel", "JsonCache"]
 
 
 class BaseCheckpoint:
+    """A class for indexing checkpoints weights by LoRA layer names"""
+
     def __init__(self, path, key_mapper=get_sdxl_lora_keys, cache=None):
         self.path = Path(path)
         self.fd = fd = safetensors.safe_open(path, framework="pt")
-        self.spectral_norms_cache = {}
-        if cache is not None:
-            self.spectral_norms_cache = cache.get(path).setdefault(
-                "spectral_norms", self.spectral_norms_cache
-            )
+        self._cache = {} if cache is None else cache
+        self._cached_weights_name = None
 
         base_keys = fd.keys()
         self.shapes = shapes = {}
@@ -83,7 +43,12 @@ class BaseCheckpoint:
                 lora2base[lora_layer_keys] = base_key
 
     def get_weights(self, lora_key):
+        # Single entry cache to reuse loaded weights
+        if self._cached_weights_name == lora_key:
+            return self._cached_weights
+
         base_key = self.lora2base[lora_key]
+        logging.debug("Loading base weight %s for %s", base_key, lora_key)
         if isinstance(base_key, tuple):
             # Attention projection layer requires splitting into one of K, Q, V
             base_key, chunk_idx, n_chunks = base_key
@@ -95,20 +60,31 @@ class BaseCheckpoint:
                     f"{base_key} shape={tuple(shape)} is not divisible in {n_chunks} chunks"
                 )
             slice = self.fd.get_slice(base_key)
-            return slice[chunk_idx * chunk_len : (chunk_idx + 1) * chunk_len]
+            W = slice[chunk_idx * chunk_len : (chunk_idx + 1) * chunk_len]
         else:
-            return self.fd.get_tensor(base_key)
+            W = self.fd.get_tensor(base_key)
 
-    def spectral_norm(self, layer, weights=None, niter=64, dtype=pt.float32, **kwargs):
-        cache = self.spectral_norms_cache
-        sn = cache.get(layer)
-        if sn is not None:
-            return sn
-        if weights is None:
-            weights = self.get_weights(layer).to(dtype=dtype, **kwargs)
-        sn = pt.svd_lowrank(weights.flatten(start_dim=1), q=1, niter=niter)[1][0].cpu().item()
-        cache[layer] = sn
-        return sn
+        self._cached_weights_name = lora_key
+        self._cached_weights = W
+        return W
+
+    @cached("frobenius_norms")
+    def frobenius_norm(self, layer, dtype=torch.float32, **kwargs):
+        weights = self.get_weights(layer).to(dtype=dtype, **kwargs)
+        return (
+            torch.linalg.matrix_norm(weights.flatten(start_dim=1), ord="fro")
+            .cpu()
+            .item()
+        )
+
+    @cached("spectral_norms")
+    def spectral_norm(self, layer, niter=64, dtype=torch.float32, **kwargs):
+        weights = self.get_weights(layer).to(dtype=dtype, **kwargs)
+        return (
+            torch.svd_lowrank(weights.flatten(start_dim=1), q=1, niter=niter)[1][0]
+            .cpu()
+            .item()
+        )
 
 
 class PairedLoraModel:
@@ -150,30 +126,8 @@ class PairedLoraModel:
         return DecomposedLoRA(self.lora_fd, lora_key, **kwargs)
 
 
-def fast_decompose(up, down):
-    Ud, Sd, Vhd = pt.linalg.svd(down.flatten(start_dim=1), full_matrices=False)
-    Uu, Su, Vhu = pt.linalg.svd(up.flatten(start_dim=1), full_matrices=False)
-    Uc, Sc, Vhc = pt.linalg.svd((Vhu * Su.unsqueeze(1)) @ (Ud * Sd))
-    U = Uu @ Uc
-    Vh = Vhc @ Vhd
-    return U, Sc, Vh
-
-
-def load_lora_layer(lora_file, name, **to_kwargs):
-    alpha = lora_file.get_tensor(f"{name}.alpha").item()
-    down = lora_file.get_tensor(f"{name}.lora_down.weight").to(**to_kwargs)
-    up = lora_file.get_tensor(f"{name}.lora_up.weight").to(**to_kwargs)
-    return alpha, up, down
-
-
-def outer_cosine_sim(U1, U2):
-    U1n = U1 / pt.linalg.norm(U1, dim=0)
-    U2n = U2 / pt.linalg.norm(U2, dim=0)
-    return U1n.T @ U2n
-
-
 class DecomposedLoRA:
-    "Decomposed LoRA layer"
+    "LoRA layer decomposed using SVD"
 
     def __init__(self, lora_fd, name, **kwargs):
         self.name = name
@@ -210,10 +164,10 @@ class DecomposedLoRA:
         scale = self.scale
         input_shape = self.input_shape
 
-        S_sqrt = pt.sqrt(S * (1.0 / scale))
+        S_sqrt = torch.sqrt(S * (1.0 / scale))
         down = (Vh * S_sqrt.unsqueeze(1)).view(dim, *input_shape)
         up = (U * S_sqrt).view(*U.shape, *[1] * (len(input_shape) - 1))
-        alpha = pt.scalar_tensor(scale * dim, dtype=down.dtype, device=down.device)
+        alpha = torch.scalar_tensor(scale * dim, dtype=down.dtype, device=down.device)
 
         d = {
             f"{name}.alpha": alpha,
@@ -232,38 +186,10 @@ class DecomposedLoRA:
         W_base = W_base.flatten(start_dim=1).to(
             device=self.S.device, dtype=self.S.dtype
         )
-        return pt.linalg.vecdot(self.Vh @ W_base.T, self.U.T)
+        return torch.linalg.vecdot(self.Vh @ W_base.T, self.U.T)
 
     def to(self, **kwargs):
         self.Vh = self.Vh.to(**kwargs)
         self.S = self.S.to(**kwargs)
         self.U = self.U.to(**kwargs)
         return self
-
-
-class JsonCache:
-    def __init__(self, fp):
-        self.fp = Path(fp)
-        self.cache = {}
-        self.load()
-
-    def load(self):
-        if self.fp.exists():
-            logging.info("Loading %s", self.fp)
-            with open(self.fp, "rt") as fd:
-                self.cache = json.load(fd)
-
-    def save(self, discard=False):
-        if not self.cache:
-            return
-        with open(self.fp, "wt") as fd:
-            json.dump(self.cache, fd)
-        if discard:  # avoid double save
-            self.cache = False
-
-    def get(self, model_path):
-        model_path = Path(model_path).resolve()
-        return self.cache.setdefault(str(model_path), {})
-
-    def __del__(self):
-        self.save(discard=True)

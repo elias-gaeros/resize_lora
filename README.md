@@ -67,7 +67,9 @@ The score recipe string is a comma-separated list of key-value pairs. It specifi
 
 - `spn_ckpt`: Weight for the score relative to the spectral norm of the layer from the checkpoint. The score is $\sigma_i(BA) / \sigma_\text{max}\left(W_\text{ckpt}\right)$.
 - `spn_lora`: Weight for the score relative to the spectral norm of the layer from the LoRA model. The score is $\sigma_i(BA) / \sigma_\text{max}\left(BA\right)$.
-- `subspace`: Weight for the subspace score, computed as $\sigma_i(BA) / \left\langle \mathbf{u}_i, W\_\text{ckpt} \mathbf{v}_i \right\rangle$.
+- `fro_ckpt`: Weight for the score relative to the Frobenius norm of the layer from the checkpoint. The score is $\sigma_i(BA) / \|W_\text{ckpt}\|_\text{F}$.
+- `fro_lora`: Weight for the score relative to the Frobenius norm of the layer from the LoRA model. The score is $\sigma_i(BA) / \|BA\|_\text{F}$.
+- `subspace`: Weight for the subspace score, computed as $\sigma_i(BA) / \left\langle \mathbf{u}_i, W_\text{ckpt} \mathbf{v}_i \right\rangle$.
 - `size`: Target output size in MiBs (required if `thr` is not specified).
 - `thr`: Log base 10 threshold for scores (required if `size` is not specified). A threshold of -1 (the default) will select the singular values $> 10^{-1} \times \text{reference}$, at least 1/10th of the reference. Typically negative except for `subspace` denominator.
 

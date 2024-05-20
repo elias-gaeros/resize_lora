@@ -27,7 +27,7 @@ def parse_score_recipe(recipe):
     for part in recipe.split(","):
         key, _, value = part.partition("=")
         if key in weights:
-            weights[key] = float(value)
+            weights[key] = float(value) if value else 1.0
         elif key == "size":
             size = float(value)
         elif key == "thr":

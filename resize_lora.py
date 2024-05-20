@@ -74,8 +74,7 @@ def process_lora_model(
             continue
         lora_layers.append(decomposed_lora)
 
-    for recipe in recipes:
-        score_weights, target_size, threshold = parse_score_recipe(recipe)
+    for recipe, score_weights, target_size, threshold in recipes:
         needs_flat_scores = print_scores or target_size is not None
 
         score_layers = {}
@@ -236,7 +235,10 @@ def main():
     logging.basicConfig(level=log_level)
     output_folder = Path(args.output_folder)
     output_dtype = torch.float16 if args.output_dtype == "16" else torch.float32
-    score_recipes = args.score_recipes.split(":")
+    score_recipes = [
+        (recipe, *parse_score_recipe(recipe))
+        for recipe in args.score_recipes.split(":")
+    ]
 
     norms_cache = JsonCache(Path(__file__).parent / "norms_cache.json")
     checkpoint = BaseCheckpoint(args.checkpoint_path, cache=norms_cache)

@@ -65,6 +65,11 @@ Filters out the singular values that are 10 times smaller or more than the spect
 
 The score recipe string is a comma-separated list of key-value pairs. It specifies the weights for the geometric average of various score metrics and the threshold or the target file size. At least one score type and one selection method must be specified. Valid keys are:
 
+**Selection methods:**
+
+- `size`: Target output size in MiBs (required if `thr` is not specified).
+- `thr`: Log base 10 threshold for scores (required if `size` is not specified). A threshold of -1.2 (the default) will select the singular values $> 10^{-1.2} \times \text{reference}$, at least 1/16th of the reference. Typically negative except for `subspace` denominator.
+
 **Scoring method weights:**
 
 - `spn_ckpt`: Weight for the score relative to the spectral norm of the layer from the checkpoint. The score is $\sigma_i(BA) / \sigma_\text{max}\left(W_\text{ckpt}\right)$.
@@ -72,6 +77,7 @@ The score recipe string is a comma-separated list of key-value pairs. It specifi
 - `fro_ckpt`: Weight for the score relative to the Frobenius norm of the layer from the checkpoint. The score is $\sigma_i(BA) / \|W_\text{ckpt}\|_\text{F}$.
 - `fro_lora`: Weight for the score relative to the Frobenius norm of the layer from the LoRA model. The score is $\sigma_i(BA) / \|BA\|_\text{F}$.
 - `subspace`: Weight for the subspace score, computed as $\sigma_i(BA) / \left\langle \mathbf{u}_i, W\_\text{ckpt} \mathbf{v}_i \right\rangle$.
+- `params`: Divide the score by the number of parameters required by ranks: $\sigma_i(BA) / (n + m)$. A low weight, like `params=0.1`, favors layers with fewer parameters per rank. Used with `size=`, this does a [greedy knapsack approximation](https://en.wikipedia.org/wiki/Knapsack_problem#Greedy_approximation_algorithm).
 
 A weight of 1 is used if no weight is specified. Weights are normalized to sum to 1. For example, `fro_ckpt=3,spn_lora` is equivalent to `fro_ckpt=0.75,spn_lora=0.25`.
 
@@ -81,10 +87,19 @@ Unlike `spn_lora`, `spn_ckpt` and `fro_ckpt` can remove LoRA layers completely. 
 
 `subspace` is experimental and hasn't performed well alone. It favors singular subspaces that gets contracted by the base weights. It remains to be seen if low weights can improve other methods.
 
-**Selection methods:**
+### Spectral norm vs. Frobenius norm
 
-- `size`: Target output size in MiBs (required if `thr` is not specified).
-- `thr`: Log base 10 threshold for scores (required if `size` is not specified). A threshold of -1 (the default) will select the singular values $> 10^{-1} \times \text{reference}$, at least 1/10th of the reference. Typically negative except for `subspace` denominator.
+The Frobenius norm of a matrix $W \in \mathbb{R}^{n \times m}$ can be expressed as the euclidean norm its singular values. A typical weight matrix from a neural network has a complete numerical rank and singular values that are slowly decreasing. Under this assumption we get the following scaling law relating the spectral norm $\|W\|_F$ to the spectral norm $\sigma_{\max}$:
+
+$$
+\|W\|^2_F = \sum_i \sigma_i^2(W) \propto \min(n, m) \cdot \sigma_{\max}^2(W)
+$$
+
+This means that the score `fro_ckpt` ($\sigma_i(BA) / \|W_\text{ckpt}\|_\text{F}$) tends to behave little like the score `spn_ckpt=2,params=1`, which is:
+
+$$
+\frac{\sigma_i(BA)}{\left( \left(n+m\right) \cdot \|W_\text{ckpt}\|^2_\text{F} \right)^\frac{1}{3}}
+$$
 
 ### Advanced Example
 

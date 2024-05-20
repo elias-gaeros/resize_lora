@@ -20,6 +20,7 @@ def parse_score_recipe(recipe):
         "subspace": 0.0,
         "fro_lora": 0.0,
         "fro_ckpt": 0.0,
+        "params": 0.0,
     }
     size = None
     threshold = None
@@ -103,6 +104,8 @@ def process_lora_model(
                 scores -= score_weights["fro_lora"] * torch.log10(
                     torch.linalg.vector_norm(S)
                 )
+            if abs(score_weights["params"]) > 1e-6:
+                scores -= score_weights["params"] * log10(decomposed_lora.dim_size(1))
             score_layers[layer_name] = scores
 
             if needs_flat_scores:

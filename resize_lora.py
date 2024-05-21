@@ -134,6 +134,8 @@ class ResizeRecipe:
             else:
                 threshold = -torch.inf
             logger.info("Selected threshold: %.3f", threshold)
+        else:
+            threshold = self.threshold
 
         sd = {}
         for decomposed_lora, layer_scores in zip(lora_layers, scores):

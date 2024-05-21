@@ -134,8 +134,8 @@ class DecomposedLoRA:
         alpha, up, down = load_lora_layer(lora_fd, name, **kwargs)
         self.input_shape = down.shape[1:]
         self.U, S, self.Vh = fast_decompose(up, down)
-        self.scale = scale = alpha / down.shape[0]
-        self.S = S * scale
+        self.alpha_factor = alpha_factor = alpha / down.shape[0]
+        self.S = S * alpha_factor
 
     @property
     def dim(self):
@@ -143,12 +143,12 @@ class DecomposedLoRA:
 
     @property
     def alpha(self):
-        return self.scale * self.dim
+        return self.alpha_factor * self.dim
 
     def dim_size(self, element_size=2):
         return element_size * (self.U.shape[0] + self.Vh.shape[1])
 
-    def statedict(self, mask=None, **kwargs):
+    def statedict(self, mask=None, rescale=1.0, **kwargs):
         S = self.S
         Vh = self.Vh
         U = self.U
@@ -161,13 +161,15 @@ class DecomposedLoRA:
             return {}
 
         name = self.name
-        scale = self.scale
+        alpha_factor = self.alpha_factor
         input_shape = self.input_shape
 
-        S_sqrt = torch.sqrt(S * (1.0 / scale))
+        S_sqrt = torch.sqrt(S * (rescale / alpha_factor))
         down = (Vh * S_sqrt.unsqueeze(1)).view(dim, *input_shape)
         up = (U * S_sqrt).view(*U.shape, *[1] * (len(input_shape) - 1))
-        alpha = torch.scalar_tensor(scale * dim, dtype=down.dtype, device=down.device)
+        alpha = torch.scalar_tensor(
+            alpha_factor * dim, dtype=down.dtype, device=down.device
+        )
 
         d = {
             f"{name}.alpha": alpha,

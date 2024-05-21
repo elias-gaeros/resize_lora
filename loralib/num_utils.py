@@ -2,12 +2,10 @@ import torch
 
 
 def fast_decompose(up, down):
-    Ud, Sd, Vhd = torch.linalg.svd(down.flatten(start_dim=1), full_matrices=False)
-    Uu, Su, Vhu = torch.linalg.svd(up.flatten(start_dim=1), full_matrices=False)
-    Uc, Sc, Vhc = torch.linalg.svd((Vhu * Su.unsqueeze(1)) @ (Ud * Sd))
-    U = Uu @ Uc
-    Vh = Vhc @ Vhd
-    return U, Sc, Vh
+    Qu, Ru = torch.linalg.qr(up)
+    Qd, Rd = torch.linalg.qr(down.T)
+    Uc, Sc, Vhc = torch.linalg.svd(Ru @ Rd.T)
+    return Qu @ Uc, Sc, Vhc @ Qd.T
 
 
 def load_lora_layer(lora_file, name, **to_kwargs):

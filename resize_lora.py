@@ -209,12 +209,14 @@ def process_lora_model(
         metadata = lora_model.lora_fd.metadata()
         metadata["resize_params"] = json.dumps(params)
 
-        recipe_fn = [f"{k}{v:.2f}" for k, v in recipe.weights.items() if v != 0]
+        recipe_fn = [f"{k}{format_float(v)}" for k, v in sorted(recipe.weights.items()) if v != 0]
         if recipe.target_size is not None:
-            recipe_fn.append(f"size{recipe.target_size:.1f}")
+            recipe_fn.append(f"size{format_float(recipe.target_size)}")
+        if recipe.rescale != 1.0:
+            recipe_fn.append(f"scale{format_float(recipe.rescale)}")
         recipe_fn = "_".join(recipe_fn)
         output_path = output_folder / (
-            f"{lora_model.lora_path.stem}_th{threshold:.2f}_{recipe_fn}.safetensors"
+            f"{lora_model.lora_path.stem}_th{format_float(threshold)}_{recipe_fn}.safetensors"
         )
 
         logger.info("Saving %s", output_path)
@@ -223,6 +225,10 @@ def process_lora_model(
             output_path,
             metadata=lora_model.lora_fd.metadata(),
         )
+
+
+def format_float(v, p=2):
+    return f"{v:.{p}f}".rstrip("0").rstrip(".")
 
 
 def main():

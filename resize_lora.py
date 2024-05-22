@@ -1,4 +1,4 @@
-from math import log10
+from math import log10, sqrt
 import argparse
 import logging
 from pathlib import Path
@@ -27,8 +27,13 @@ class ResizeRecipe:
         self.target_size = None
         self.threshold = None
         self.rescale = 1.0
+        self.rotate = False
+        self.quantize = None
 
         for part in recipe_str.split(","):
+            if part == "rotate":
+                self.rotate = True
+                continue
             key, _, value = part.partition("=")
             if value:
                 try:
@@ -51,6 +56,8 @@ class ResizeRecipe:
                     self.threshold = value
                 case "rescale":
                     self.rescale = value
+                case "quantize":
+                    self.quantize = value
                 case _:
                     raise ValueError(f"Unknown key {key} in recipe {recipe_str}")
 
@@ -139,24 +146,45 @@ class ResizeRecipe:
 
         sd = {}
         for decomposed_lora, layer_scores in zip(lora_layers, scores):
+            name = decomposed_lora.name
             mask = layer_scores > threshold
-            sd.update(
-                decomposed_lora.statedict(
-                    mask=mask, dtype=output_dtype, rescale=self.rescale
-                )
+            layer_sd = decomposed_lora.statedict(
+                mask=mask,
+                rescale=self.rescale,
+                rot=self.rotate,
             )
+
             if print_layers:
                 S = decomposed_lora.S * self.rescale
                 err = 0.0 if torch.all(mask) else torch.linalg.vector_norm(S[~mask])
                 re_lora = err / torch.linalg.vector_norm(S)
-                re_ckpt = err / checkpoint.frobenius_norm(
-                    decomposed_lora.name, dtype=torch.float32
-                )
+                re_ckpt = err / checkpoint.frobenius_norm(name, dtype=torch.float32)
                 logger.debug(
                     f"dim:{S.shape[0]:>3}->{mask.sum().item():<3}"
                     f" rle_lora:{100. * re_lora:>6.2f}% rle_ckpt:{100. * re_ckpt:>6.2f}%"
-                    f" {decomposed_lora.name}"
+                    f" {name}"
                 )
+
+            if not layer_sd:
+                continue
+
+            if self.quantize is not None:
+                down = layer_sd[f"{name}.lora_down.weight"]
+                up = layer_sd[f"{name}.lora_up.weight"]
+
+                flat = torch.cat((down.flatten(), up.flatten()))
+                std = torch.linalg.vector_norm(flat) / sqrt(flat.shape[0])
+                del flat
+
+                down = down.mul_(self.quantize / std).round_().mul_(1.0 / self.quantize)
+                up = down.mul_(self.quantize / std).round_().mul_(1.0 / self.quantize)
+
+                layer_sd[f"{name}.alpha"] *= std
+                layer_sd[f"{name}.lora_down.weight"] = down
+                layer_sd[f"{name}.lora_up.weight"] = up
+
+            layer_sd = {k: v.to(dtype=output_dtype) for k, v in layer_sd.items()}
+            sd.update(layer_sd)
 
         if print_scores:
             quantile_fracs = [0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.99]

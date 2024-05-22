@@ -5,7 +5,7 @@ import torch
 import safetensors.torch
 
 from .utils import cached, JsonCache
-from .num_utils import load_lora_layer, fast_decompose
+from .num_utils import load_lora_layer, fast_decompose, special_ortho_group
 from .sdxl_mapper import get_sdxl_lora_keys
 
 
@@ -148,7 +148,7 @@ class DecomposedLoRA:
     def dim_size(self, element_size=2):
         return element_size * (self.U.shape[0] + self.Vh.shape[1])
 
-    def statedict(self, mask=None, rescale=1.0, **kwargs):
+    def statedict(self, mask=None, rescale=1.0, rot=False, **kwargs):
         S = self.S
         Vh = self.Vh
         U = self.U
@@ -170,6 +170,16 @@ class DecomposedLoRA:
         alpha = torch.scalar_tensor(
             alpha_factor * dim, dtype=down.dtype, device=down.device
         )
+
+        
+        if rot is not False and dim > 1:
+            if rot is True:
+                rot = special_ortho_group(dim)
+            std_before = torch.std(torch.cat((down.T,up)), axis=0).std()
+            down = rot @ down
+            up = up @ rot.T
+            std_after = torch.std(torch.cat((down.T,up)), axis=0).std()
+            # print(std_before, std_after)
 
         d = {
             f"{name}.alpha": alpha,

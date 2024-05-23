@@ -57,7 +57,7 @@ class ResizeRecipe:
         wsum = sum(parsed.values())
         if wsum == 0.0:
             raise ValueError("At least one score type must be specified")
-        parsed = {k: v / wsum for k, v in parsed.items()}
+        self.weights = parsed = {k: v / wsum for k, v in parsed.items()}
 
         if self.target_size is None and self.threshold is None:
             raise ValueError("Either 'size' or 'thr' must be specified in the recipe")

@@ -104,7 +104,14 @@ class ResizeRecipe:
         print_scores = logger.isEnabledFor(logging.INFO)
         print_layers = logger.isEnabledFor(logging.DEBUG)
         needs_flat_scores = print_scores or self.target_size is not None
-        output_elem_size = output_elem_size or output_dtype.itemsize
+        if output_elem_size is None:
+            if output_dtype == torch.float32:
+                output_elem_size = 4
+            elif output_dtype == torch.float16:
+                output_elem_size = 2
+            else:
+                # Only works for torch>=2.1
+                output_elem_size = output_dtype.itemsize
 
         # Score all fims
         scores = [

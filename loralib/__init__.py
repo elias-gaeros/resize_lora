@@ -16,9 +16,9 @@ class BaseCheckpoint:
     """A class for indexing checkpoints weights by LoRA layer names"""
 
     def __init__(self, path, key_mapper=get_sdxl_lora_keys, cache=None):
-        self.path = Path(path)
+        self.path = path = Path(path)
         self.fd = fd = safetensors.safe_open(path, framework="pt")
-        self._cache = {} if cache is None else cache
+        self._cache = {} if cache is None else cache[str(path.resolve())]
         self._cached_weights_name = None
 
         base_keys = fd.keys()

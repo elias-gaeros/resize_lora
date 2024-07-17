@@ -60,7 +60,6 @@ def cached(cache_name):
 
     def decorator(fun):
         def wrapper(self, key, *args, **kwargs):
-            print(f"cache_name: {cache_name}, key: {key}")
             root_cache = self._cache
             cache = root_cache[cache_name]
             if cache is None:

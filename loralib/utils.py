@@ -8,7 +8,7 @@ from functools import update_wrapper
 class JsonCache(dict):
     __slot__ = ("fp", "factory")
 
-    def __init__(self, fp, factory=lambda x: defaultdict(dict)):
+    def __init__(self, fp, factory=lambda x, *args: defaultdict(dict, *args)):
         super().__init__
         self.fp = Path(fp)
         self.factory = factory
@@ -22,7 +22,9 @@ class JsonCache(dict):
         if self.fp.exists():
             logging.info("Loading %s", self.fp)
             with open(self.fp, "rt") as fd:
-                self.update(json.load(fd))
+                data = json.load(fd)
+            for k, v in data.items():
+                self[k] = self.factory(k, v)
 
     def save(self, discard=False):
         if not len(self):

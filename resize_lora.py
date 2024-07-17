@@ -252,9 +252,9 @@ def main():
     parser.add_argument(
         "-o",
         "--output_folder",
-        required=True,
         type=str,
-        help="Folder to save the output files",
+        default=None,
+        help="Folder to save the output files, use the same folder as the input lora if not specified",
     )
     parser.add_argument(
         "-t",
@@ -289,7 +289,7 @@ def main():
 
     log_level = logging.WARNING - (10 * args.verbose)
     logging.basicConfig(level=log_level)
-    output_folder = Path(args.output_folder)
+
     output_dtype = torch.float16 if args.output_dtype == "16" else torch.float32
     score_recipes = [ResizeRecipe(recipe) for recipe in args.score_recipes.split(":")]
 
@@ -298,6 +298,10 @@ def main():
 
     for lora_model_path in args.lora_model_paths:
         logger.info(f"Processing LoRA model: {lora_model_path}")
+        lora_model_path = Path(lora_model_path)
+        output_folder = lora_model_path.parent
+        if args.output_folder:
+            output_folder = Path(args.output_folder)
         paired = PairedLoraModel(lora_model_path, checkpoint)
         process_lora_model(
             lora_model=paired,

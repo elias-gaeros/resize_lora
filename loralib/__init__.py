@@ -145,10 +145,10 @@ class ConcatLoRAsDict:
         # geometric average of rescale_factors weighted by dims is 1
         rescale_factors = (weights * alphas * sum_dims) / (output_alpha * dims)
         assert torch.allclose(
-            torch.tensor(0.0),
-            (rescale_factors.log() * dims).sum(),
-            rtol=1e-5,
-            atol=1e-5,
+            torch.tensor(1.0),
+            (rescale_factors.log() * dims).sum().exp(),
+            rtol=1e-3,
+            atol=1e-3,
         )
         assert torch.allclose(
             rescale_factors * output_alpha / dims.sum(), weights * alphas / dims

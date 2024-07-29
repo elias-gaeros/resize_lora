@@ -4,7 +4,7 @@ import torch
 def fast_decompose(up, down):
     Qu, Ru = torch.linalg.qr(up.flatten(start_dim=1))
     Qd, Rd = torch.linalg.qr(down.flatten(start_dim=1).mT)
-    Uc, Sc, Vhc = torch.linalg.svd(Ru @ Rd.mT)
+    Uc, Sc, Vhc = torch.linalg.svd(Ru @ Rd.mT, full_matrices=False)
     return Qu @ Uc, Sc, Vhc @ Qd.mT
 
 

@@ -1,3 +1,5 @@
+from collections import defaultdict
+import re
 from pathlib import Path
 import logging
 
@@ -10,6 +12,8 @@ from .sdxl_mapper import get_sdxl_lora_keys
 
 
 __all__ = ["BaseCheckpoint", "PairedLoraModel", "JsonCache"]
+
+RE_NAME_SPLIT = re.compile(r"[\-_ ]").split
 
 
 class BaseCheckpoint:
@@ -87,13 +91,114 @@ class BaseCheckpoint:
         )
 
 
+class LoRADict:
+    def __init__(self, lora_path, **to_args):
+        self.path = lora_path = Path(lora_path)
+        self.lora_fd = lora_fd = safetensors.safe_open(
+            lora_path, framework="pt", device=str(to_args.get("device", "cpu"))
+        )
+        self.to_args = to_args
+        self.keys = set(lora_fd.keys())
+
+    def __getitem__(self, name):
+        lora_fd = self.lora_fd
+        to_kwargs = self.to_args
+        alpha = lora_fd.get_tensor(f"{name}.alpha").item()
+        down = lora_fd.get_tensor(f"{name}.lora_down.weight").to(**to_kwargs)
+        up = lora_fd.get_tensor(f"{name}.lora_up.weight").to(**to_kwargs)
+        return alpha, up, down
+
+    @property
+    def name(self):
+        return self.path.stem
+
+    def metadata(self):
+        return self.lora_fd.metadata()
+
+
+class ConcatLoRAsDict:
+    """Load multiple LoRAs, and for each layer, concatenate the weights along the `dim` dimension"""
+
+    def __init__(self, lora_paths_and_weights, **to_args):
+        self.loras_and_weights = [
+            (LoRADict(lora_path, **to_args), w)
+            for lora_path, w in lora_paths_and_weights
+        ]
+        self.keys = set.union(*(lora.keys for lora, _ in self.loras_and_weights))
+
+    def __getitem__(self, name):
+        alpha_name = f"{name}.alpha"
+        weights, alphas, ups, downs = zip(
+            *[
+                (w, *lora[name])
+                for lora, w in self.loras_and_weights
+                if alpha_name in lora.keys
+            ]
+        )
+        kwargs = dict(dtype=downs[0].dtype, device=downs[0].device)
+        weights = torch.tensor(weights)
+        alphas = torch.tensor(alphas)
+        dims = torch.tensor([down.size(0) for down in downs], **kwargs)
+        sum_dims = torch.sum(dims)
+        output_alpha = sum_dims * torch.prod(
+            (weights * alphas / dims) ** (dims / sum_dims)
+        )
+        # geometric average of rescale_factors weighted by dims is 1
+        rescale_factors = (weights * alphas * sum_dims) / (output_alpha * dims)
+        # Halves the factors for rescaling both up and down
+        rescale_factors = rescale_factors.sqrt().to(
+            dtype=downs[0].dtype, device=downs[0].device
+        )
+
+        assert torch.allclose(
+            torch.tensor(0.0),
+            (rescale_factors.log() * dims).sum(),
+            rtol=1e-5,
+            atol=1e-5,
+        )
+        assert torch.allclose(
+            rescale_factors * output_alpha / dims.sum(), weights * alphas / dims
+        )
+
+        ups = [w * up for w, up in zip(rescale_factors, ups)]
+        up = torch.cat(ups, dim=1)
+        downs = [w * down for w, down in zip(rescale_factors, downs)]
+        down = torch.cat(downs, dim=0)
+
+        return output_alpha, up, down
+
+    @property
+    def name(self):
+        names = defaultdict(list)
+        for lora, w in self.loras_and_weights:
+            name = RE_NAME_SPLIT(lora.name, 0)[0]
+            names[name].append(w)
+        res = []
+        for name, weights in names.items():
+            if any(abs(w - 1.0) > 1e-6 for w in weights):
+                weights = "+".join(f"{w:.2f}" for w in weights)
+                name = f"{name}({weights})"
+            res.append(name)
+        return "+".join(res)
+
+    @property
+    def path(self):
+        return self.loras_and_weights[0][0].path
+
+    def metadata(self):
+        # FIXME: what can we do here?
+        # metadata is so messy I don't want to touch it
+        return self.loras_and_weights[0][0].metadata()
+
+
 class PairedLoraModel:
-    def __init__(self, lora_path: str | Path, checkpoint: BaseCheckpoint):
-        self.lora_path = Path(lora_path)
-        self.lora_fd = lora_fd = safetensors.safe_open(lora_path, framework="pt")
+    """A class for pairing LoRA layers with their base layers"""
+
+    def __init__(self, lora_dict: LoRADict, checkpoint: BaseCheckpoint):
+        self.lora_dict = lora_dict
         self.checkpoint = checkpoint
 
-        lora_keys = lora_fd.keys()
+        lora_keys = lora_dict.keys
         self.lora2base = lora2base = {}
         for lora_key, base_key in checkpoint.lora2base.items():
             if f"{lora_key}.alpha" in lora_keys:
@@ -123,15 +228,15 @@ class PairedLoraModel:
         return self.lora2base.keys()
 
     def decompose_layer(self, lora_key, **kwargs):
-        return DecomposedLoRA(self.lora_fd, lora_key, **kwargs)
+        return DecomposedLoRA(self.lora_dict, lora_key, **kwargs)
 
 
 class DecomposedLoRA:
     "LoRA layer decomposed using SVD"
 
-    def __init__(self, lora_fd, name, **kwargs):
+    def __init__(self, lora_dict: LoRADict, name, **kwargs):
         self.name = name
-        alpha, up, down = load_lora_layer(lora_fd, name, **kwargs)
+        alpha, up, down = lora_dict[name]
         self.input_shape = down.shape[1:]
         self.U, S, self.Vh = fast_decompose(up, down)
         self.alpha_factor = alpha_factor = alpha / down.shape[0]

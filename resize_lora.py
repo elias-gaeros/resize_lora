@@ -8,7 +8,14 @@ from tqdm import tqdm
 import torch
 import safetensors.torch
 
-from loralib import PairedLoraModel, BaseCheckpoint, JsonCache, DecomposedLoRA
+from loralib import (
+    PairedLoraModel,
+    BaseCheckpoint,
+    JsonCache,
+    DecomposedLoRA,
+    LoRADict,
+    ConcatLoRAsDict,
+)
 
 logger = logging.root
 
@@ -213,7 +220,7 @@ def process_lora_model(
 
         params = recipe.__dict__.copy()
         params["threshold"] = threshold
-        metadata = lora_model.lora_fd.metadata()
+        metadata = lora_model.lora_dict.metadata()
         metadata["resize_params"] = json.dumps(params)
 
         recipe_fn = [
@@ -227,15 +234,27 @@ def process_lora_model(
             recipe_fn.append(f"size{format_float(recipe.target_size)}")
         recipe_fn = "_".join(recipe_fn)
         output_path = output_folder / (
-            f"{lora_model.lora_path.stem}_{recipe_fn}_th{format_float(threshold)}.safetensors"
+            f"{lora_model.lora_dict.name}_{recipe_fn}_th{format_float(threshold)}.safetensors"
         )
 
         logger.info("Saving %s", output_path)
         safetensors.torch.save_file(
             sd,
             output_path,
-            metadata=lora_model.lora_fd.metadata(),
+            metadata=metadata,
         )
+
+
+def load_lora_or_merge(path, **to_kwargs):
+    if "," in path:
+        members = []
+        for path in path.split(","):
+            path, _, weight = path.partition(":")
+            weight = float(weight) if weight else 1.0
+            members.append((path, weight))
+        return ConcatLoRAsDict(members, **to_kwargs)
+    else:
+        return LoRADict(path, **to_kwargs)
 
 
 def format_float(v, p=2):
@@ -305,11 +324,13 @@ def main():
 
     for lora_model_path in args.lora_model_paths:
         logger.info(f"Processing LoRA model: {lora_model_path}")
-        lora_model_path = Path(lora_model_path)
-        output_folder = lora_model_path.parent
+        lora_dict = load_lora_or_merge(
+            lora_model_path, device=args.device, dtype=torch.float32
+        )
+        output_folder = lora_dict.path.parent
         if args.output_folder:
             output_folder = Path(args.output_folder)
-        paired = PairedLoraModel(lora_model_path, checkpoint)
+        paired = PairedLoraModel(lora_dict, checkpoint)
         process_lora_model(
             lora_model=paired,
             recipes=score_recipes,

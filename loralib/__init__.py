@@ -135,21 +135,15 @@ class ConcatLoRAsDict:
                 if alpha_name in lora.keys
             ]
         )
-        kwargs = dict(dtype=downs[0].dtype, device=downs[0].device)
         weights = torch.tensor(weights)
         alphas = torch.tensor(alphas)
-        dims = torch.tensor([down.size(0) for down in downs], **kwargs)
+        dims = torch.tensor([down.size(0) for down in downs])
         sum_dims = torch.sum(dims)
         output_alpha = sum_dims * torch.prod(
             (weights * alphas / dims) ** (dims / sum_dims)
         )
         # geometric average of rescale_factors weighted by dims is 1
         rescale_factors = (weights * alphas * sum_dims) / (output_alpha * dims)
-        # Halves the factors for rescaling both up and down
-        rescale_factors = rescale_factors.sqrt().to(
-            dtype=downs[0].dtype, device=downs[0].device
-        )
-
         assert torch.allclose(
             torch.tensor(0.0),
             (rescale_factors.log() * dims).sum(),
@@ -158,6 +152,10 @@ class ConcatLoRAsDict:
         )
         assert torch.allclose(
             rescale_factors * output_alpha / dims.sum(), weights * alphas / dims
+        )
+        # Halves the factors for rescaling both up and down
+        rescale_factors = rescale_factors.sqrt().to(
+            dtype=downs[0].dtype, device=downs[0].device
         )
 
         ups = [w * up for w, up in zip(rescale_factors, ups)]

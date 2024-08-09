@@ -7,7 +7,7 @@ import torch
 import safetensors.torch
 
 from .utils import cached, JsonCache
-from .num_utils import load_lora_layer, fast_decompose
+from .num_utils import fast_decompose
 from .sdxl_mapper import get_sdxl_lora_keys
 
 

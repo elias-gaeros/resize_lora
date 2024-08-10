@@ -4,8 +4,7 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
-from safetensors.torch import safe_open, save_file
-from torch import Tensor
+from safetensors.numpy import safe_open, save_file
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +65,9 @@ def print_block_layout(
         vector_string = ",".join(
             f"{section2shortname[section]}{idx:02d}" for (section, idx), _ in block2keys
         )
-        logger.info(f'Vector string : "1,{vector_string}"')
+        logger.info(f'Vector string format: "1,{vector_string}"')
+        vector_string = ",".join('0'*len(block2keys))
+        logger.info(f'Example (drops all blocks): "1,{vector_string}"')
     else:
         for i, (((section, idx), v), weight) in enumerate(zip(block2keys, weights)):
             if abs(weight) > 1e-6:
@@ -81,7 +82,7 @@ def print_block_layout(
                 )
 
 
-def filter_blocks(sft_fd: safe_open, vector_string: str) -> dict[str, Tensor]:
+def filter_blocks(sft_fd: safe_open, vector_string: str) -> dict[str, "numpy.ndarray"]:
     """
     Filter LoRA blocks based on a vector string.
 
@@ -165,7 +166,7 @@ def main() -> None:
     setup_logging(args.verbose - args.quiet)
 
     try:
-        with safe_open(args.input_file, framework="pt") as sft_fd:
+        with safe_open(args.input_file, framework="np") as sft_fd:
             if args.vector_string:
                 # Filter blocks and save the result
                 filtered_state_dict = filter_blocks(sft_fd, args.vector_string)
@@ -177,7 +178,9 @@ def main() -> None:
                     f"{args.input_file.stem}-chop"
                 )
 
-                save_file(filtered_state_dict, output_path)
+                metadata = sft_fd.metadata()
+                metadata["block_vector_string"] = args.vector_string
+                save_file(filtered_state_dict, output_path, metadata=metadata)
                 logging.info(f"Filtered LoRA saved to {output_path}")
             else:
                 # Analyze LoRA layers

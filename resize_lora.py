@@ -301,7 +301,7 @@ def main():
         "-r",
         "--score_recipes",
         type=str,
-        default="spn_ckpt=1,thr=-1.2",
+        default="fro_ckpt=1,thr=-3.5",
         help="Score recipes separated by ':' in the format spn_ckpt=X,spn_lora=Y,subspace=Z,size=S:spn_ckpt=...",
     )
     parser.add_argument(

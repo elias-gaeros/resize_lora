@@ -106,7 +106,11 @@ class LoRADict:
         alpha = lora_fd.get_tensor(f"{name}.alpha").item()
         down = lora_fd.get_tensor(f"{name}.lora_down.weight").to(**to_kwargs)
         up = lora_fd.get_tensor(f"{name}.lora_up.weight").to(**to_kwargs)
-        return alpha, up, down
+        dora_scale = None
+        if f"{name}.dora_scale" in self.keys:
+            # FIXME: .to(**to_kwargs) once we take care of the normalization
+            dora_scale = lora_fd.get_tensor(f"{name}.dora_scale")
+        return alpha, up, down, dora_scale
 
     @property
     def name(self):
@@ -218,6 +222,7 @@ class PairedLoraModel:
                 lora_layer_keys.removesuffix(".alpha")
                 .removesuffix(".lora_down.weight")
                 .removesuffix(".lora_up.weight")
+                .removesuffix(".dora_scale")
             )
             if lora_layer_keys not in lora2base:
                 raise ValueError(f"Target layer not found for LoRA {lora_layer_keys}")
@@ -234,11 +239,12 @@ class DecomposedLoRA:
 
     def __init__(self, lora_dict: LoRADict, name, **kwargs):
         self.name = name
-        alpha, up, down = lora_dict[name]
+        alpha, up, down, dora_scale = lora_dict[name]
         self.input_shape = down.shape[1:]
         self.U, S, self.Vh = fast_decompose(up, down)
         self.alpha_factor = alpha_factor = alpha / down.shape[0]
         self.S = S * alpha_factor
+        self.dora_scale = dora_scale
 
     @property
     def dim(self):
@@ -279,6 +285,8 @@ class DecomposedLoRA:
             f"{name}.lora_down.weight": down,
             f"{name}.lora_up.weight": up,
         }
+        if self.dora_scale is not None:
+            d[f"{name}.dora_scale"] = self.dora_scale
         if kwargs:
             d = {k: v.to(**kwargs) for k, v in d.items()}
         return d

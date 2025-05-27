@@ -18,6 +18,7 @@ from loralib import (
 )
 
 logger = logging.root
+BYTES_IN_MEGABYTE = 1 << 20
 
 
 class ResizeRecipe:
@@ -120,7 +121,7 @@ class ResizeRecipe:
                 # Only works for torch>=2.1
                 output_elem_size = output_dtype.itemsize
 
-        # Score all fims
+        # Score all dims
         scores = [
             self.score_dims(decomposed_lora, checkpoint, **compute_kwargs)
             for decomposed_lora in lora_layers
@@ -140,20 +141,31 @@ class ResizeRecipe:
                     dtype=torch.int32,
                 ).T
             )[order].cumsum(0)
-            target_size_bytes = self.target_size * (1 << 20)
+            target_size_bytes = self.target_size * BYTES_IN_MEGABYTE
             if target_size_bytes < cum_sizes[-1]:
-                threshold = flat_scores[
-                    torch.searchsorted(cum_sizes, target_size_bytes).item()
-                ].item()
+                idx = torch.searchsorted(cum_sizes, target_size_bytes).item()
+                threshold = flat_scores[idx].item()
+                logger.info(
+                    "Total rank: %d. threshold %.2f: target:%.3fM <= real:%.3fM < next:%.3fM",
+                    idx + 1,
+                    threshold,
+                    self.target_size,
+                    cum_sizes[idx] / BYTES_IN_MEGABYTE,
+                    (
+                        cum_sizes[idx + 1] / BYTES_IN_MEGABYTE
+                        if idx + 1 < len(cum_sizes)
+                        else cum_sizes[idx] / BYTES_IN_MEGABYTE
+                    ),
+                )
             else:
                 threshold = -torch.inf
-            logger.info("Selected threshold: %.3f", threshold)
+
         else:
             threshold = self.threshold
 
         sd = {}
         for decomposed_lora, layer_scores in zip(lora_layers, scores):
-            mask = layer_scores > threshold
+            mask = layer_scores >= threshold
             sd.update(
                 decomposed_lora.statedict(
                     mask=mask, dtype=output_dtype, rescale=self.rescale

@@ -183,43 +183,36 @@ def get_multi_format_lora_keys(base_key):
     This allows checking multiple naming conventions when loading LoRAs.
     """
     standard_keys = get_sdxl_lora_keys(base_key)
+    # alt_keys and direct_format are calculated *before* checking if standard_keys is a list
     alt_keys = get_alt_lora_keys(base_key)
-
-    # Additional formats to try
     direct_format = None
     if base_key.startswith(UNET_PREFIX):
-        # Try using just the end part of the key without "model.diffusion_model."
-        # Convert dots to underscores for common LoRA format
         direct_format = (
             base_key.removeprefix(UNET_PREFIX).removesuffix(".weight").replace(".", "_")
         )
 
+    # If standard_keys is already a list of parts, it's authoritative for split layers.
+    # Do not append alt_keys/direct_format meant for the whole layer to this list of parts.
+    if isinstance(standard_keys, list):
+        return standard_keys  # Return the list of parts directly
+
+    # standard_keys is a string or None here (non-split layer according to get_sdxl_lora_keys)
     if standard_keys is None and alt_keys is None and direct_format is None:
         return None
 
-    # Handle the case where standard_keys is a list
-    if isinstance(standard_keys, list):
-        result = standard_keys
-        if alt_keys is not None:
-            if isinstance(alt_keys, list):
-                result.extend(alt_keys)
-            else:
-                result.append(alt_keys)
-        if direct_format is not None:
-            result.append(direct_format)
-        return result
-
-    # Create a result list with unique keys
     result = []
     if standard_keys is not None:
         result.append(standard_keys)
-    if alt_keys is not None and alt_keys != standard_keys:
+    if alt_keys is not None and alt_keys not in result:  # Check for duplicates
         result.append(alt_keys)
-    if direct_format is not None and direct_format not in result:
+    if (
+        direct_format is not None and direct_format not in result
+    ):  # Check for duplicates
         result.append(direct_format)
 
-    # If only one key, return it directly rather than as a list
+    if len(result) == 0:  # Should be caught by the None check above, but for safety
+        return None
     if len(result) == 1:
         return result[0]
 
-    return result if result else None
+    return result  # List of alternative names for a single, non-split layer

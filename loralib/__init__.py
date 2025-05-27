@@ -27,24 +27,63 @@ class BaseCheckpoint:
 
         base_keys = fd.keys()
         self.shapes = shapes = {}
-        self.base2lora = base2lora = {}
-        self.lora2base = lora2base = {}
-        for base_key in base_keys:
-            if base_key.startswith("first_stage_model."):
+        self.base2lora = base2lora = (
+            {}
+        )  # Maps base_key_str -> list of LoRA names or single LoRA name
+        self.lora2base = lora2base = (
+            {}
+        )  # Maps LoRA name -> base_key_str OR (base_key_str, chunk_idx, n_chunks)
+        for base_key_str in base_keys:
+            if base_key_str.startswith("first_stage_model."):
                 continue  # ignore VAE
-            shapes[base_key] = shape = fd.get_slice(base_key).get_shape()
-            if not base_key.endswith("weight") or len(shape) < 2:
-                continue
-            lora_layer_keys = key_mapper(base_key)
-            if lora_layer_keys is None:
+            shapes[base_key_str] = shape = fd.get_slice(base_key_str).get_shape()
+            if not base_key_str.endswith("weight") or len(shape) < 2:
                 continue
 
-            base2lora[base_key] = lora_layer_keys
-            if isinstance(lora_layer_keys, list):
-                for i, lora_layer_key in enumerate(lora_layer_keys):
-                    lora2base[lora_layer_key] = (base_key, i, len(lora_layer_keys))
+            # lora_names_for_base can be str or list of strs from get_multi_format_lora_keys
+            lora_names_for_base = key_mapper(base_key_str)
+            if lora_names_for_base is None:
+                continue
+
+            base2lora[base_key_str] = lora_names_for_base
+
+            # Determine if this base_key_str corresponds to a genuinely split layer
+            # according to the primary SDXL mapper.
+            sdxl_key_info = get_sdxl_lora_keys(
+                base_key_str
+            )  # Used to check if base_key_str is split by design
+            is_genuinely_split_by_sdxl = isinstance(sdxl_key_info, list)
+
+            if is_genuinely_split_by_sdxl:
+                # Base layer is genuinely split (e.g., QKV).
+                # lora_names_for_base should be a list of these part names.
+                # (Assuming get_multi_format_lora_keys correctly returns the list of parts here)
+                if not isinstance(lora_names_for_base, list) or len(
+                    lora_names_for_base
+                ) != len(sdxl_key_info):
+                    # This might indicate an issue in get_multi_format_lora_keys if it alters lists of parts.
+                    # For robustness, use sdxl_key_info which is the direct list of parts.
+                    logging.warning(
+                        f"LoRA key list from key_mapper for splittable base key {base_key_str} "
+                        f"({lora_names_for_base}) does not match SDXL parts list ({sdxl_key_info}). Using SDXL parts list."
+                    )
+                    parts_to_map = sdxl_key_info
+                else:
+                    parts_to_map = lora_names_for_base
+
+                for i, part_lora_key in enumerate(parts_to_map):
+                    lora2base[part_lora_key] = (base_key_str, i, len(parts_to_map))
             else:
-                lora2base[lora_layer_keys] = base_key
+                # Base layer is NOT genuinely split by sdxl_key_info.
+                # lora_names_for_base is either a single string or a list of alternative names for the same tensor.
+                if isinstance(lora_names_for_base, list):
+                    # It's a list of alternative names for the *same unsplit* tensor.
+                    for alt_lora_key in lora_names_for_base:
+                        lora2base[alt_lora_key] = (
+                            base_key_str  # Map to the unsplit base_key_str
+                        )
+                elif lora_names_for_base is not None:  # It's a single string name
+                    lora2base[lora_names_for_base] = base_key_str
 
     def get_weights(self, lora_key):
         # Single entry cache to reuse loaded weights

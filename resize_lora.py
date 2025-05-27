@@ -16,6 +16,7 @@ from loralib import (
     LoRADict,
     ConcatLoRAsDict,
 )
+from loralib.metadata import precalculate_safetensors_hashes
 
 logger = logging.root
 BYTES_IN_MEGABYTE = 1 << 20
@@ -214,6 +215,9 @@ def process_lora_model(
             device="cpu"
         )
         if decomposed_lora.S[0].abs().item() < 1e-6:
+            if "text_model_encoder_layers_11" in decomposed_lora.name:
+                # skip the warning, all sdxl LoRAs trained with sd-scripts have untrained weights for the last layer of the text encoder
+                continue
             logger.warning(
                 "LoRA layer %s is all zeroes! dim=%d",
                 decomposed_lora.name,
@@ -249,6 +253,10 @@ def process_lora_model(
             f"{lora_model.lora_dict.name}_{recipe_fn}_th{format_float(threshold)}.safetensors"
         )
 
+        model_hash, legacy_hash = precalculate_safetensors_hashes(sd, metadata)
+        metadata["sshs_model_hash"] = model_hash
+        metadata["sshs_legacy_hash"] = legacy_hash
+
         logger.info("Saving %s", output_path)
         safetensors.torch.save_file(
             sd,
@@ -260,10 +268,10 @@ def process_lora_model(
 def load_lora_or_merge(path, **to_kwargs):
     if "," in path:
         members = []
-        for path in path.split(","):
-            path, _, weight = path.partition(":")
+        for path_entry in path.split(","):
+            path_val, _, weight = path_entry.partition(":")
             weight = float(weight) if weight else 1.0
-            members.append((path, weight))
+            members.append((path_val, weight))
         return ConcatLoRAsDict(members, **to_kwargs)
     else:
         return LoRADict(path, **to_kwargs)
@@ -339,14 +347,14 @@ def main():
         lora_dict = load_lora_or_merge(
             lora_model_path, device=args.device, dtype=torch.float32
         )
-        output_folder = lora_dict.path.parent
+        output_folder_path = lora_dict.path.parent
         if args.output_folder:
-            output_folder = Path(args.output_folder)
+            output_folder_path = Path(args.output_folder)
         paired = PairedLoraModel(lora_dict, checkpoint)
         process_lora_model(
             lora_model=paired,
             recipes=score_recipes,
-            output_folder=output_folder,
+            output_folder=output_folder_path,
             output_dtype=output_dtype,
             device=args.device,
         )

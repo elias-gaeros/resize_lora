@@ -25,65 +25,68 @@ class BaseCheckpoint:
         self._cache = {} if cache is None else cache[str(path.resolve())]
         self._cached_weights_name = None
 
-        base_keys = fd.keys()
+        base_keys_from_file = fd.keys()
         self.shapes = shapes = {}
-        self.base2lora = base2lora = (
-            {}
-        )  # Maps base_key_str -> list of LoRA names or single LoRA name
-        self.lora2base = lora2base = (
-            {}
-        )  # Maps LoRA name -> base_key_str OR (base_key_str, chunk_idx, n_chunks)
-        for base_key_str in base_keys:
+        # base2lora stores the direct name(s) returned by the mapper for a base_key_str
+        # e.g., base_key_str -> "lora_name" OR base_key_str -> ["alias1", "alias2"]
+        self.base2lora = base2lora_mapping = {}
+        # lora2base maps any known LoRA name variant to its base layer info
+        # e.g., "lora_name" -> "base_key_str" OR "lora_part_name" -> ("base_key_str", idx, count)
+        self.lora2base = lora2base_mapping = {}
+
+        for base_key_str in base_keys_from_file:
             if base_key_str.startswith("first_stage_model."):
                 continue  # ignore VAE
             shapes[base_key_str] = shape = fd.get_slice(base_key_str).get_shape()
             if not base_key_str.endswith("weight") or len(shape) < 2:
                 continue
 
-            # lora_names_for_base can be str or list of strs from get_multi_format_lora_keys
-            lora_names_for_base = key_mapper(base_key_str)
-            if lora_names_for_base is None:
+            # mapped_info will be (is_split, names_from_mapper) or None
+            mapped_info = key_mapper(base_key_str)
+
+            if mapped_info is None:
                 continue
 
-            base2lora[base_key_str] = lora_names_for_base
+            is_split_by_mapper, names_from_mapper = mapped_info
 
-            # Determine if this base_key_str corresponds to a genuinely split layer
-            # according to the primary SDXL mapper.
-            sdxl_key_info = get_sdxl_lora_keys(
-                base_key_str
-            )  # Used to check if base_key_str is split by design
-            is_genuinely_split_by_sdxl = isinstance(sdxl_key_info, list)
+            base2lora_mapping[base_key_str] = names_from_mapper
 
-            if is_genuinely_split_by_sdxl:
-                # Base layer is genuinely split (e.g., QKV).
-                # lora_names_for_base should be a list of these part names.
-                # (Assuming get_multi_format_lora_keys correctly returns the list of parts here)
-                if not isinstance(lora_names_for_base, list) or len(
-                    lora_names_for_base
-                ) != len(sdxl_key_info):
-                    # This might indicate an issue in get_multi_format_lora_keys if it alters lists of parts.
-                    # For robustness, use sdxl_key_info which is the direct list of parts.
-                    logging.warning(
-                        f"LoRA key list from key_mapper for splittable base key {base_key_str} "
-                        f"({lora_names_for_base}) does not match SDXL parts list ({sdxl_key_info}). Using SDXL parts list."
+            if is_split_by_mapper:
+                # names_from_mapper must be a list of part names (e.g., Q, K, V)
+                if not isinstance(names_from_mapper, list):
+                    logging.error(
+                        f"Internal inconsistency: key_mapper indicated a split for {base_key_str} "
+                        f"but did not return a list of names: {names_from_mapper}. Skipping this base key."
                     )
-                    parts_to_map = sdxl_key_info
-                else:
-                    parts_to_map = lora_names_for_base
+                    continue
 
-                for i, part_lora_key in enumerate(parts_to_map):
-                    lora2base[part_lora_key] = (base_key_str, i, len(parts_to_map))
+                num_parts = len(names_from_mapper)
+                if num_parts == 0:
+                    logging.warning(
+                        f"key_mapper indicated split for {base_key_str} but returned empty list of names."
+                    )
+                    continue
+
+                for i, part_lora_key in enumerate(names_from_mapper):
+                    lora2base_mapping[part_lora_key] = (base_key_str, i, num_parts)
             else:
-                # Base layer is NOT genuinely split by sdxl_key_info.
-                # lora_names_for_base is either a single string or a list of alternative names for the same tensor.
-                if isinstance(lora_names_for_base, list):
-                    # It's a list of alternative names for the *same unsplit* tensor.
-                    for alt_lora_key in lora_names_for_base:
-                        lora2base[alt_lora_key] = (
-                            base_key_str  # Map to the unsplit base_key_str
-                        )
-                elif lora_names_for_base is not None:  # It's a single string name
-                    lora2base[lora_names_for_base] = base_key_str
+                # names_from_mapper is a single string (one LoRA name)
+                # or a list of alias strings for an unsplit layer.
+                if isinstance(names_from_mapper, list):  # List of aliases
+                    for alias_lora_key in names_from_mapper:
+                        lora2base_mapping[alias_lora_key] = base_key_str
+                elif isinstance(names_from_mapper, str):  # Single name
+                    lora2base_mapping[names_from_mapper] = base_key_str
+                else:
+                    logging.error(
+                        f"Internal inconsistency: key_mapper indicated no split for {base_key_str} "
+                        f"but returned an unexpected type: {names_from_mapper}. Skipping."
+                    )
+                    continue
+
+        # Assign to self attributes after loop
+        self.lora2base = lora2base_mapping
+        self.base2lora = base2lora_mapping
 
     def get_weights(self, lora_key):
         # Single entry cache to reuse loaded weights
@@ -239,83 +242,84 @@ class PairedLoraModel:
         self.lora_dict = lora_dict
         self.checkpoint = checkpoint
 
-        lora_keys = lora_dict.keys
-        self.lora2base = lora2base = {}
+        # Get all unique LoRA layer names from the LoRA file (e.g., "lora_unet_down_blocks_0_attentions_0_proj_in")
+        lora_file_keys_alpha_stripped = set()
+        for (
+            k
+        ) in lora_dict.keys:  # k includes suffixes like ".alpha", ".lora_down.weight"
+            if k.endswith(".alpha"):
+                lora_file_keys_alpha_stripped.add(k.removesuffix(".alpha"))
 
-        # First, try to map known base keys to LoRA keys
-        for lora_key, base_key in checkpoint.lora2base.items():
-            # Check if the exact key exists
-            if f"{lora_key}.alpha" in lora_keys:
-                lora2base[lora_key] = base_key
-            # If exact key doesn't exist, look for alternative formats
+        # This will map: LoRA key *as found in the file* -> base_info from checkpoint
+        # base_info is 'base_model_key_str' or ('base_model_key_str', chunk_idx, num_chunks)
+        self.lora2base = {}
+
+        # Iterate through LoRA keys found in the LoRA file
+        for lora_key_in_file in lora_file_keys_alpha_stripped:
+            if lora_key_in_file in checkpoint.lora2base:
+                # This LoRA key from the file is a known name/alias/part_name to the checkpoint's mapper
+                base_info = checkpoint.lora2base[lora_key_in_file]
+                self.lora2base[lora_key_in_file] = base_info
             else:
-                if isinstance(base_key, tuple):
-                    base_key_info = base_key
-                    base_key = base_key[0]
-                else:
-                    base_key_info = base_key
-
-                # Try alternative approaches:
-
-                # 1. Look for keys with similar names
-                possible_matches = []
-                for key in lora_keys:
-                    if key.endswith(".alpha"):
-                        lora_layer_key = key.removesuffix(".alpha")
-                        # Check for partial matches
-                        if lora_key.split("_")[-1] in lora_layer_key or any(
-                            part in lora_layer_key
-                            for part in lora_key.split("_")
-                            if len(part) > 2
-                        ):
-                            possible_matches.append(lora_layer_key)
-
-                if possible_matches:
-                    # Use the first possible match
-                    lora2base[possible_matches[0]] = base_key_info
-                    logging.info(
-                        "Found alternative LoRA key %r for base key %r (expected %r)",
-                        possible_matches[0],
-                        base_key,
-                        lora_key,
-                    )
-                else:
-                    shape = checkpoint.shapes[base_key]
-                    logging.info(
-                        "No LoRA layer for %r %s, expected LoRA key: %r",
-                        base_key,
-                        tuple(shape),
-                        lora_key,
-                    )
-
-        # Checks that all LoRA layers have been mapped
-        used_lora_keys = set()
-        for lora_key in lora_keys:
-            # Remove suffixes to get the base LoRA layer name
-            lora_layer_key = (
-                lora_key.removesuffix(".alpha")
-                .removesuffix(".lora_down.weight")
-                .removesuffix(".lora_up.weight")
-                .removesuffix(".dora_scale")
-            )
-
-            if lora_layer_key in lora2base:
-                used_lora_keys.add(lora_layer_key)
-            elif lora_key.endswith(".alpha") and lora_layer_key not in lora2base:
+                # This LoRA key from the file is not recognized by the checkpoint's comprehensive mapper.
                 logging.warning(
-                    f"LoRA key %r found in file but not mapped to any base layer",
-                    lora_layer_key,
+                    f"LoRA key %r found in file but is not mapped to any base layer "
+                    f"by the checkpoint's key_mapper.",
+                    lora_key_in_file,
                 )
 
-        # Log statistics about the mapping
+        # Logging for unmapped base layers (checkpoint layers that weren't covered by any LoRA in the file)
+        # Collect all unique base_infos that the checkpoint expects LoRAs for.
+        expected_base_infos_in_checkpoint = set(checkpoint.lora2base.values())
+
+        # Collect all base_infos that were successfully mapped using keys from the LoRA file.
+        mapped_base_infos_from_file = set(self.lora2base.values())
+
+        unmapped_base_infos = (
+            expected_base_infos_in_checkpoint - mapped_base_infos_from_file
+        )
+
+        if unmapped_base_infos:
+            # For logging, create a reverse map from base_info to one of its expected LoRA names.
+            # This is just to provide a helpful "expected LoRA key" in the log.
+            base_info_to_one_lora_key_for_log = {}
+            for ckpt_lora_key, ckpt_base_info in checkpoint.lora2base.items():
+                if (
+                    ckpt_base_info not in base_info_to_one_lora_key_for_log
+                ):  # Keep first one found
+                    base_info_to_one_lora_key_for_log[ckpt_base_info] = ckpt_lora_key
+
+            for base_info in sorted(
+                list(unmapped_base_infos), key=str
+            ):  # Sort for consistent logging
+                base_key_str_for_log = (
+                    base_info[0] if isinstance(base_info, tuple) else base_info
+                )
+                shape = checkpoint.shapes[base_key_str_for_log]
+                # Get one representative expected LoRA key for this base_info
+                representative_lora_key = base_info_to_one_lora_key_for_log.get(
+                    base_info, "unknown_expected_key"
+                )
+
+                logging.info(
+                    "No LoRA layer found in file for base layer %r %s (e.g., an expected LoRA key was: %r)",
+                    base_key_str_for_log,
+                    tuple(shape),
+                    representative_lora_key,
+                )
+
+        num_alpha_keys_in_file = len(lora_file_keys_alpha_stripped)
         logging.info(
-            f"Mapped {len(used_lora_keys)} LoRA layers to base layers (out of {len([k for k in lora_keys if k.endswith('.alpha')])} in file)"
+            f"Mapped {len(self.lora2base)} LoRA layers from file to base layers "
+            f"(out of {num_alpha_keys_in_file} LoRA alpha keys in file)."
         )
 
     def keys(self):
         return self.lora2base.keys()
 
-    def decompose_layer(self, lora_key, **kwargs):
+    def decompose_layer(
+        self, lora_key, **kwargs
+    ):  # lora_key here is a key from the LoRA file
         return DecomposedLoRA(self.lora_dict, lora_key, **kwargs)
 
 

@@ -179,40 +179,62 @@ def get_alt_lora_keys(base_key):
 
 def get_multi_format_lora_keys(base_key):
     """
-    Try multiple LoRA key mapping formats and return all possible key names.
-    This allows checking multiple naming conventions when loading LoRAs.
+    Try multiple LoRA key mapping formats.
+    Returns:
+        None: If no LoRA key mapping is found.
+        Tuple (is_split: bool, names: Union[str, List[str]]):
+            is_split (bool): True if 'names' are parts of a genuinely split base tensor (e.g., QKV).
+                             False if 'names' is a single name or list of aliases for an unsplit tensor.
+            names (Union[str, List[str]]): The LoRA key name(s).
     """
-    standard_keys = get_sdxl_lora_keys(base_key)
-    # alt_keys and direct_format are calculated *before* checking if standard_keys is a list
-    alt_keys = get_alt_lora_keys(base_key)
-    direct_format = None
+    # standard_keys_info can be a list (if base_key is split like QKV), a string, or None.
+    standard_keys_info = get_sdxl_lora_keys(base_key)
+
+    # Case 1: get_sdxl_lora_keys indicates a genuine split into parts
+    if isinstance(standard_keys_info, list):
+        # standard_keys_info is already the list of actual parts (e.g., for QKV).
+        # For such layers, we *only* return these part names.
+        # Aliases for the "whole" layer from get_alt_lora_keys or direct_format are not applicable here.
+        return True, standard_keys_info  # (is_split=True, list_of_part_names)
+
+    # Case 2: Layer is NOT indicated as split by get_sdxl_lora_keys.
+    # standard_keys_info is a string (single LoRA name for the whole layer) or None.
+    # We will now collect all *alternative names* (aliases) for this *single, unsplit* layer.
+
+    aliases_for_unsplit_layer = []
+
+    # Add the standard name if it exists (it will be a string here)
+    if standard_keys_info is not None:  # This would be a string
+        aliases_for_unsplit_layer.append(standard_keys_info)
+
+    # get_alt_lora_keys should return a string or None.
+    alt_key_single = get_alt_lora_keys(base_key)
+    if alt_key_single is not None and alt_key_single not in aliases_for_unsplit_layer:
+        aliases_for_unsplit_layer.append(alt_key_single)
+
+    direct_format_single = None
     if base_key.startswith(UNET_PREFIX):
-        direct_format = (
+        direct_format_single = (
             base_key.removeprefix(UNET_PREFIX).removesuffix(".weight").replace(".", "_")
         )
-
-    # If standard_keys is already a list of parts, it's authoritative for split layers.
-    # Do not append alt_keys/direct_format meant for the whole layer to this list of parts.
-    if isinstance(standard_keys, list):
-        return standard_keys  # Return the list of parts directly
-
-    # standard_keys is a string or None here (non-split layer according to get_sdxl_lora_keys)
-    if standard_keys is None and alt_keys is None and direct_format is None:
-        return None
-
-    result = []
-    if standard_keys is not None:
-        result.append(standard_keys)
-    if alt_keys is not None and alt_keys not in result:  # Check for duplicates
-        result.append(alt_keys)
     if (
-        direct_format is not None and direct_format not in result
-    ):  # Check for duplicates
-        result.append(direct_format)
+        direct_format_single is not None
+        and direct_format_single not in aliases_for_unsplit_layer
+    ):
+        aliases_for_unsplit_layer.append(direct_format_single)
 
-    if len(result) == 0:  # Should be caught by the None check above, but for safety
-        return None
-    if len(result) == 1:
-        return result[0]
+    if not aliases_for_unsplit_layer:
+        return None  # No known LoRA name (standard, alt, or direct) for this base_key
 
-    return result  # List of alternative names for a single, non-split layer
+    if len(aliases_for_unsplit_layer) == 1:
+        # Only one name found, return it as a string
+        return (
+            False,
+            aliases_for_unsplit_layer[0],
+        )  # (is_split=False, single_name_string)
+    else:
+        # Multiple alias names found for the same unsplit layer
+        return (
+            False,
+            aliases_for_unsplit_layer,
+        )  # (is_split=False, list_of_alias_strings)

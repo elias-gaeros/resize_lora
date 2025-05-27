@@ -9,6 +9,9 @@ LORA_TE_PREFIXES = [
     "lora_te2_text_model_encoder_layers_",
 ]
 
+# Alternative prefixes and formatters for different LoRA trainers
+ALT_LORA_UNET_PREFIX = "down_blocks_"  # Common alternative format
+
 
 def get_sdxl_lora_keys(base_key):
     layer_name = base_key.removesuffix(".weight")
@@ -42,3 +45,181 @@ def get_sdxl_lora_keys(base_key):
                         "_c_proj", "_fc2"
                     )
     return lora_keys
+
+
+def get_alt_lora_keys(base_key):
+    """
+    Alternative mapping for LoRA keys used by some trainers.
+    Maps base model weights to alternative key formats used in some LoRA files.
+    """
+    layer_name = base_key.removesuffix(".weight")
+
+    if layer_name.startswith(UNET_PREFIX):
+        # Remove the standard prefix
+        unet_part = layer_name.removeprefix(UNET_PREFIX)
+
+        # Format 1: Blocks with direct mapping (e.g. "down_1" for input_blocks.1)
+        if "input_blocks" in unet_part:
+            parts = unet_part.split(".")
+            try:
+                block_num = int(parts[1])
+                # Format: down_N
+                alt_name = f"down_{block_num}"
+
+                # Add layer details if present
+                if len(parts) > 3:
+                    # Try different possible formats
+                    layer_details = f"{parts[2]}_{parts[3]}"
+                    if "in_layers" in layer_details:
+                        alt_name += "_in"
+                    elif "out_layers" in layer_details:
+                        alt_name += "_out"
+                    elif "emb_layers" in layer_details:
+                        alt_name += "_emb"
+
+                return alt_name
+            except (IndexError, ValueError):
+                pass
+
+        # Format 2: Middle blocks
+        if "middle_block" in unet_part:
+            parts = unet_part.split(".")
+            try:
+                block_num = int(parts[1])
+                # Format: mid_N
+                alt_name = f"mid_{block_num}"
+
+                # Add layer details if present
+                if len(parts) > 3:
+                    # Try different possible formats
+                    layer_details = f"{parts[2]}_{parts[3]}"
+                    if "in_layers" in layer_details:
+                        alt_name += "_in"
+                    elif "out_layers" in layer_details:
+                        alt_name += "_out"
+                    elif "emb_layers" in layer_details:
+                        alt_name += "_emb"
+
+                return alt_name
+            except (IndexError, ValueError):
+                pass
+
+        # Format 3: Output blocks
+        if "output_blocks" in unet_part:
+            parts = unet_part.split(".")
+            try:
+                block_num = int(parts[1])
+                # Format: up_N
+                alt_name = f"up_{block_num}"
+
+                # Add layer details if present
+                if len(parts) > 3:
+                    # Try different possible formats
+                    layer_details = f"{parts[2]}_{parts[3]}"
+                    if "in_layers" in layer_details:
+                        alt_name += "_in"
+                    elif "out_layers" in layer_details:
+                        alt_name += "_out"
+                    elif "emb_layers" in layer_details:
+                        alt_name += "_emb"
+                    elif "skip_connection" in layer_details:
+                        alt_name += "_skip"
+
+                return alt_name
+            except (IndexError, ValueError):
+                pass
+
+        # Format 4: Simple layer names with numbers
+        simpler_name = None
+        if "input_blocks" in unet_part:
+            parts = unet_part.split(".")
+            try:
+                simpler_name = f"input_blocks_{parts[1]}"
+                if len(parts) > 3:
+                    simpler_name += f"_{parts[2]}_{parts[3]}"
+            except (IndexError, ValueError):
+                pass
+        elif "middle_block" in unet_part:
+            parts = unet_part.split(".")
+            try:
+                simpler_name = f"middle_block_{parts[1]}"
+                if len(parts) > 3:
+                    simpler_name += f"_{parts[2]}_{parts[3]}"
+            except (IndexError, ValueError):
+                pass
+        elif "output_blocks" in unet_part:
+            parts = unet_part.split(".")
+            try:
+                simpler_name = f"output_blocks_{parts[1]}"
+                if len(parts) > 3:
+                    simpler_name += f"_{parts[2]}_{parts[3]}"
+            except (IndexError, ValueError):
+                pass
+
+        if simpler_name:
+            return simpler_name
+
+    # For CLIP text encoder layers, try some common alternative formats
+    for te_prefix, lora_te_prefix in zip(TE_PREFIXES, LORA_TE_PREFIXES):
+        if layer_name.startswith(te_prefix):
+            # Alternative format for text encoder: text_model_encoder_N
+            parts = layer_name.removeprefix(te_prefix).split(".")
+            try:
+                layer_num = int(parts[0])
+                alt_name = f"text_model_encoder_{layer_num}"
+                if len(parts) > 1:
+                    alt_name += f"_{parts[1]}"
+                return alt_name
+            except (IndexError, ValueError):
+                pass
+
+    # Try standard mapping if alternative doesn't match
+    return None  # Return None to avoid duplicating the standard keys
+
+
+def get_multi_format_lora_keys(base_key):
+    """
+    Try multiple LoRA key mapping formats and return all possible key names.
+    This allows checking multiple naming conventions when loading LoRAs.
+    """
+    standard_keys = get_sdxl_lora_keys(base_key)
+    alt_keys = get_alt_lora_keys(base_key)
+
+    # Additional formats to try
+    direct_format = None
+    if base_key.startswith(UNET_PREFIX):
+        # Try using just the end part of the key without "model.diffusion_model."
+        # Convert dots to underscores for common LoRA format
+        direct_format = (
+            base_key.removeprefix(UNET_PREFIX).removesuffix(".weight").replace(".", "_")
+        )
+
+    if standard_keys is None and alt_keys is None and direct_format is None:
+        return None
+
+    # Handle the case where standard_keys is a list
+    if isinstance(standard_keys, list):
+        result = standard_keys
+        if alt_keys is not None:
+            if isinstance(alt_keys, list):
+                result.extend(alt_keys)
+            else:
+                result.append(alt_keys)
+        if direct_format is not None:
+            result.append(direct_format)
+        return result
+
+    # Create a result list with unique keys
+    result = []
+    if standard_keys is not None:
+        result.append(standard_keys)
+    if alt_keys is not None and alt_keys != standard_keys:
+        result.append(alt_keys)
+    if direct_format is not None and direct_format not in result:
+        result.append(direct_format)
+
+    # If only one key, return it directly rather than as a list
+    if len(result) == 1:
+        return result[0]
+
+    return result if result else None

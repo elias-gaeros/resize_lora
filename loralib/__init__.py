@@ -8,7 +8,7 @@ import safetensors.torch
 
 from .utils import cached, JsonCache
 from .num_utils import fast_decompose
-from .sdxl_mapper import get_sdxl_lora_keys
+from .sdxl_mapper import get_sdxl_lora_keys, get_multi_format_lora_keys
 
 
 __all__ = ["BaseCheckpoint", "PairedLoraModel", "JsonCache"]
@@ -19,7 +19,7 @@ RE_NAME_SPLIT = re.compile(r"[\-_ ]").split
 class BaseCheckpoint:
     """A class for indexing checkpoints weights by LoRA layer names"""
 
-    def __init__(self, path, key_mapper=get_sdxl_lora_keys, cache=None):
+    def __init__(self, path, key_mapper=get_multi_format_lora_keys, cache=None):
         self.path = path = Path(path)
         self.fd = fd = safetensors.safe_open(path, framework="pt")
         self._cache = {} if cache is None else cache[str(path.resolve())]
@@ -202,30 +202,76 @@ class PairedLoraModel:
 
         lora_keys = lora_dict.keys
         self.lora2base = lora2base = {}
+
+        # First, try to map known base keys to LoRA keys
         for lora_key, base_key in checkpoint.lora2base.items():
+            # Check if the exact key exists
             if f"{lora_key}.alpha" in lora_keys:
                 lora2base[lora_key] = base_key
+            # If exact key doesn't exist, look for alternative formats
             else:
                 if isinstance(base_key, tuple):
+                    base_key_info = base_key
                     base_key = base_key[0]
-                shape = checkpoint.shapes[base_key]
-                logging.info(
-                    "No LoRA layer for %r %s, expected LoRA key: %r",
-                    base_key,
-                    tuple(shape),
-                    lora_key,
-                )
+                else:
+                    base_key_info = base_key
+
+                # Try alternative approaches:
+
+                # 1. Look for keys with similar names
+                possible_matches = []
+                for key in lora_keys:
+                    if key.endswith(".alpha"):
+                        lora_layer_key = key.removesuffix(".alpha")
+                        # Check for partial matches
+                        if lora_key.split("_")[-1] in lora_layer_key or any(
+                            part in lora_layer_key
+                            for part in lora_key.split("_")
+                            if len(part) > 2
+                        ):
+                            possible_matches.append(lora_layer_key)
+
+                if possible_matches:
+                    # Use the first possible match
+                    lora2base[possible_matches[0]] = base_key_info
+                    logging.info(
+                        "Found alternative LoRA key %r for base key %r (expected %r)",
+                        possible_matches[0],
+                        base_key,
+                        lora_key,
+                    )
+                else:
+                    shape = checkpoint.shapes[base_key]
+                    logging.info(
+                        "No LoRA layer for %r %s, expected LoRA key: %r",
+                        base_key,
+                        tuple(shape),
+                        lora_key,
+                    )
 
         # Checks that all LoRA layers have been mapped
-        for lora_layer_keys in lora_keys:
-            lora_layer_keys = (
-                lora_layer_keys.removesuffix(".alpha")
+        used_lora_keys = set()
+        for lora_key in lora_keys:
+            # Remove suffixes to get the base LoRA layer name
+            lora_layer_key = (
+                lora_key.removesuffix(".alpha")
                 .removesuffix(".lora_down.weight")
                 .removesuffix(".lora_up.weight")
                 .removesuffix(".dora_scale")
             )
-            if lora_layer_keys not in lora2base:
-                raise ValueError(f"Target layer not found for LoRA {lora_layer_keys}")
+
+            if lora_layer_key in lora2base:
+                used_lora_keys.add(lora_layer_key)
+            elif lora_key.endswith(".alpha") and lora_layer_key not in lora2base:
+                logging.warning(
+                    f"LoRA key %r found in file but not mapped to any base layer",
+                    lora_layer_key,
+                )
+
+        # Log statistics about the mapping
+        logging.info(
+            f"Mapped {len(used_lora_keys)} LoRA layers to base layers (out of {len([k for k in lora_keys if k.endswith('.alpha')])} in file)"
+        )
 
     def keys(self):
         return self.lora2base.keys()

@@ -6,10 +6,10 @@ from functools import update_wrapper
 
 
 class JsonCache(dict):
-    __slot__ = ("fp", "factory")
+    __slots__ = ("fp", "factory")
 
     def __init__(self, fp, factory=lambda x, *args: defaultdict(dict, *args)):
-        super().__init__
+        super().__init__()
         self.fp = Path(fp)
         self.factory = factory
         self.load()
@@ -65,7 +65,7 @@ def cached(cache_name):
             root_cache = self._cache
             cache = root_cache[cache_name]
             if cache is None:
-                cache = root_cache["name"] = {}
+                cache = root_cache[cache_name] = {}
             cached = cache.get(key)
             if cached is None:
                 cached = cache[key] = fun(self, key, *args, **kwargs)

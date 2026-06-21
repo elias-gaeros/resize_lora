@@ -113,7 +113,7 @@ def build_tree_with_indices(keys: list[str]) -> dict:
     root = {}
     key_to_idx_map = {key: i for i, key in enumerate(keys)}
     for key, idx in key_to_idx_map.items():
-        # Enhanced parsing: handle both dots and underscores for hierarchy
+        # handle both dots and underscores for hierarchy
         parts = parse_hierarchical_key(key)
         current_level = root
         for part in parts:
@@ -619,16 +619,16 @@ class CompressedIndex:
 
     def get_raw_tree_for_path(self, path: str) -> dict | None:
         """
-        Constructs the full, nested dictionary tree for a single file path,
-        with tensor spec information at the leaves. Enhanced to properly group
-        adapter modules by recognizing common adapter tensor patterns.
+        Constructs the full, nested dictionary tree for a single file path, with
+        tensor spec information at the leaves. Groups adapter modules by
+        recognizing common adapter tensor patterns.
 
         Args:
             path: The file path to build the tree for.
 
         Returns:
-            A nested dictionary representing the model's structure, or None
-            if the path is not found.
+            A nested dictionary representing the model's structure, or None if
+            the path is not found.
         """
         instance = self.instances.get(path)
         if not instance:

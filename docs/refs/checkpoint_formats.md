@@ -83,11 +83,11 @@ The tools we have been building (like `loralib`, `sdxl_mapper.py`, `resize_lora.
     *   `base2lora`: Maps an LDM key to its possible LoRA aliases.
     *   `lora2base`: Maps any known LoRA alias *back* to its canonical LDM base key. This is the **most important map for a generic tool**. It allows you to take any LoRA file, read a key like `lora_unet_down_blocks_0_attentions_0_proj_in`, and instantly know it corresponds to the L-D-M-style key `model.diffusion_model.input_blocks.1.1.proj_in.weight`.
 
-*   **`resize_lora.py` and `wd_to_lora.py`**: These scripts *use* this system. `resize_lora.py` uses the `PairedLoraModel` (which relies on `BaseCheckpoint`) to correctly associate a LoRA layer with its corresponding base model weight for scoring. `wd_to_lora.py`, in its simplified form, did a crude, hardcoded mapping (`f"diffusion_model.{lora_key_base}"`), which highlights why a comprehensive, flexible mapping system like `sdxl_mapper.py` is necessary for true generic compatibility.
+*   **`resize_lora.py` and `wd_to_lora.py`**: These scripts *use* this system. `resize_lora.py` uses the `PairedLoraModel` (which relies on `BaseCheckpoint`) to correctly associate a LoRA layer with its corresponding base model weight for scoring. `wd_to_lora.py`, in its simplified form, did a crude, hardcoded mapping (`f"diffusion_model.{lora_key_base}"`), which highlights why a flexible mapping system like `sdxl_mapper.py` is necessary for true generic compatibility.
 
 To write a generic tool that works on any checkpoint or adapter, you must emulate this pattern:
 
 1.  **Choose your internal "ground truth" format.** The LDM/A1111 scheme is the most logical choice as it is ComfyUI's standard.
-2.  **Build a comprehensive mapping layer.** This is a function or class that can translate keys from any known format (Diffusers, various LoRA scripts) *to* your ground truth format. Our `sdxl_mapper.py` is an excellent starting point for this.
+2.  **Build a mapping layer.** This is a function or class that can translate keys from any known format (Diffusers, various LoRA scripts) *to* your ground truth format. Our `sdxl_mapper.py` is an excellent starting point for this.
 3.  **Process all inputs through the mapping layer.** When your tool loads a file, it should create a unified view of that file using the standardized keys, regardless of how they were named on disk.
 4.  **Operate on the unified view.** All your core logic should only ever have to deal with one set of key names—your internal standard. This dramatically simplifies everything that follows.

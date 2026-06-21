@@ -15,10 +15,10 @@ def format_size(size_bytes):
     if size_bytes == 0:
         return "0 B"
     if size_bytes < 1024**2:
-        return f"{size_bytes/1024:.2f} KB"
+        return f"{size_bytes / 1024:.2f} KB"
     if size_bytes < 1024**3:
-        return f"{size_bytes/1024**2:.2f} MB"
-    return f"{size_bytes/1024**3:.2f} GB"
+        return f"{size_bytes / 1024**2:.2f} MB"
+    return f"{size_bytes / 1024**3:.2f} GB"
 
 
 def format_dtype(dtype_str):
@@ -370,7 +370,7 @@ def analyze_node_type_basic(node):
 
     # --- Adapter Detection ---
 
-    # First, try comprehensive adapter detection
+    # First, try adapter detection
     adapter_type, adapter_meta = detect_adapter_type(node_keys)
 
     if adapter_type:
@@ -411,7 +411,7 @@ def analyze_node_type_basic(node):
 
 def analyze_node_type(node):
     """
-    node classification with comprehensive adapter format detection.
+    node classification with adapter format detection.
 
     This version detects all major adapter formats from ComfyUI documentation
     and also recognizes attention patterns.
@@ -451,7 +451,7 @@ def analyze_node_type(node):
 
     # --- Adapter Detection ---
 
-    # First, try comprehensive adapter detection
+    # First, try adapter detection
     adapter_type, adapter_meta = detect_adapter_type(node_keys)
 
     if adapter_type:
@@ -1028,7 +1028,7 @@ def main():
             for p in paths[:3]:
                 print(f"      - {Path(p).name}")
             if len(paths) > 3:
-                print(f"      - ... and {len(paths)-3} more")
+                print(f"      - ... and {len(paths) - 3} more")
             generate_summary_tree(raw_tree, Path(representative_path).name)
 
 

@@ -44,7 +44,7 @@ graph TD
 ```
 
 **Step 1: Execute (`python test_key_mapper.py ...`)**
-The process began by running the test harness against the full data index and a target base model, which generated a comprehensive report.
+The process began by running the test harness against the full data index and a target base model, which generated a report.
 
 **Step 2: Analyze the Report**
 The report output is our primary tool for diagnosis. We analyzed it from the top down:
@@ -94,4 +94,4 @@ The initial design risked becoming an unmaintainable monolith. This was solved b
 
 ## 5. Conclusion
 
-This data-driven development loop has been a resounding success. It transformed an intractable problem—supporting a chaotic ecosystem of models—into a manageable, iterative engineering process. By prioritizing fixes based on real-world data, we focused our efforts where they would have the most impact. The test harness has proven to be an indispensable tool, enabling us to build a `KeyMapper` that is not only comprehensive and **~100% accurate** on our test set, but also robust, maintainable, and ready for the future of model architectures.
+This data-driven development loop has been a resounding success. It transformed an intractable problem—supporting a chaotic ecosystem of models—into a manageable, iterative engineering process. By prioritizing fixes based on real-world data, we focused our efforts where they would have the most impact. The test harness has proven to be an indispensable tool, enabling us to build a `KeyMapper` that is not only and **~100% accurate** on our test set, but also robust, maintainable, and ready for the future of model architectures.

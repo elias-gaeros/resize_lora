@@ -16,7 +16,7 @@ This document outlines the architecture for a modular, extensible, and high-perf
 
 To achieve modularity and performance, the `KeyMapper` is built on a **"Generator" pattern**. This pattern strictly separates the expensive, one-time process of **map generation** from the frequent, lightweight process of **key lookup**.
 
-1.  **Build Time (Initialization):** When a `KeyMapper` is instantiated for a specific base model, it orchestrates a series of `MappingGenerator` plugins. Each generator is an expert in a particular naming convention (e.g., Diffusers, ComfyUI prefixes). It inspects the base model's structure and *generates* a dictionary of its known `(foreign_key, canonical_key)` pairs. These dictionaries are merged into a single, comprehensive "Rosetta Stone" map. This is a one-time cost.
+1.  **Build Time (Initialization):** When a `KeyMapper` is instantiated for a specific base model, it orchestrates a series of `MappingGenerator` plugins. Each generator is an expert in a particular naming convention (e.g., Diffusers, ComfyUI prefixes). It inspects the base model's structure and *generates* a dictionary of its known `(foreign_key, canonical_key)` pairs. These dictionaries are merged into a single, "Rosetta Stone" map. This is a one-time cost.
 
 2.  **Lookup Time (Runtime):** Once initialized, all subsequent calls to map a key are reduced to a single, highly efficient `O(1)` dictionary lookup against the pre-built "Rosetta Stone" map.
 

@@ -4,6 +4,7 @@ from io import BytesIO
 import safetensors.torch
 import hashlib
 
+
 def precalculate_safetensors_hashes(tensors, metadata):
     """
     Precalculates model hashes for a given set of tensors and metadata.
@@ -27,11 +28,12 @@ def precalculate_safetensors_hashes(tensors, metadata):
     metadata = {k: v for k, v in metadata.items() if k.startswith("ss_")}
 
     bytes_data = safetensors.torch.save(tensors, metadata)
-    b = BytesIO(bytes_data) # Create an in-memory binary stream
+    b = BytesIO(bytes_data)  # Create an in-memory binary stream
 
     model_hash = addnet_hash_safetensors(b)
     legacy_hash = addnet_hash_legacy(b)
     return model_hash, legacy_hash
+
 
 def addnet_hash_legacy(b):
     """
@@ -48,9 +50,9 @@ def addnet_hash_legacy(b):
     """
     m = hashlib.sha256()
 
-    b.seek(0x100000) # Seek to the predefined offset
-    m.update(b.read(0x10000)) # Read a fixed number of bytes
-    return m.hexdigest()[0:8] # Return the first 8 characters of the hash
+    b.seek(0x100000)  # Seek to the predefined offset
+    m.update(b.read(0x10000))  # Read a fixed number of bytes
+    return m.hexdigest()[0:8]  # Return the first 8 characters of the hash
 
 
 def addnet_hash_safetensors(b):
@@ -67,14 +69,18 @@ def addnet_hash_safetensors(b):
         str: The full SHA256 hexdigest.
     """
     hash_sha256 = hashlib.sha256()
-    blksize = 1024 * 1024 # 1MB block size for reading
+    blksize = 1024 * 1024  # 1MB block size for reading
 
-    b.seek(0) # Go to the beginning of the stream
-    header = b.read(8) # Read the 8-byte header indicating the length of the JSON metadata
-    n = int.from_bytes(header, "little") # Convert header bytes to an integer (length of JSON)
+    b.seek(0)  # Go to the beginning of the stream
+    header = b.read(
+        8
+    )  # Read the 8-byte header indicating the length of the JSON metadata
+    n = int.from_bytes(
+        header, "little"
+    )  # Convert header bytes to an integer (length of JSON)
 
-    offset = n + 8 # Calculate the offset to the start of the tensor data
-    b.seek(offset) # Seek past the JSON metadata
+    offset = n + 8  # Calculate the offset to the start of the tensor data
+    b.seek(offset)  # Seek past the JSON metadata
     # Read the rest of the file in chunks and update the hash
     for chunk in iter(lambda: b.read(blksize), b""):
         hash_sha256.update(chunk)

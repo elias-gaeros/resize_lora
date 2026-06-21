@@ -9,7 +9,7 @@ The process of loading an adapter and applying it to a model follows a clear pat
 1.  **Entry Point (`nodes.py`)**: The process starts with the `LoraLoader` node. This node takes the `model` and `clip` patchers, the `lora_name`, and strength values. Its primary action is to call `comfy.sd.load_lora_for_models`.
 
 2.  **Key Mapping (`comfy.sd.py`)**: The `load_lora_for_models` function is the main dispatcher.
-    - It first builds a comprehensive `key_map` by calling `comfy.lora.model_lora_keys_unet` and `comfy.lora.model_lora_keys_clip`. This map contains all potential LoRA key names (e.g., `lora_unet_...`, `lora_te1_...`, and various community formats) and links them to their corresponding weight names in the ComfyUI model state dictionaries.
+    - It first builds a `key_map` by calling `comfy.lora.model_lora_keys_unet` and `comfy.lora.model_lora_keys_clip`. This map contains all potential LoRA key names (e.g., `lora_unet_...`, `lora_te1_...`, and various community formats) and links them to their corresponding weight names in the ComfyUI model state dictionaries.
     - ```python
       # in comfy/sd.py
       def load_lora_for_models(model, clip, lora, strength_model, strength_clip):
@@ -59,7 +59,7 @@ The process of loading an adapter and applying it to a model follows a clear pat
 
 ### Key Parsing: A Model-First Mapping Strategy
 
-ComfyUI's compatibility stems from its "model-first" approach to identifying LoRA keys, primarily within `comfy.lora.model_lora_keys_unet` and `comfy.lora.model_lora_keys_clip`. Instead of parsing keys from the LoRA file directly and trying to guess their target, it does the reverse: it inspects the loaded UNet and CLIP models and generates a comprehensive map of all *possible* LoRA key names that could correspond to each weight.
+ComfyUI's compatibility stems from its "model-first" approach to identifying LoRA keys, primarily within `comfy.lora.model_lora_keys_unet` and `comfy.lora.model_lora_keys_clip`. Instead of parsing keys from the LoRA file directly and trying to guess their target, it does the reverse: it inspects the loaded UNet and CLIP models and generates a map of all *possible* LoRA key names that could correspond to each weight.
 
 This map supports multiple naming conventions simultaneously.
 
@@ -127,7 +127,7 @@ def model_lora_keys_unet(model, key_map={}):
             key_map[diffusers_lora_key] = unet_key
 ```
 
-This comprehensive mapping is why most community LoRAs work without modification. The system doesn't guess; it knows all the possible valid names for a given model weight and checks for all of them.
+This mapping is why most community LoRAs work without modification. The system doesn't guess; it knows all the possible valid names for a given model weight and checks for all of them.
 
 ### Supported Adapter Formats & Tensor Suffixes
 
@@ -172,4 +172,4 @@ The following table provides concrete examples demonstrating how the model-first
 | LoRA | `weight` | `mid_block.attentions.0.transformer_blocks.0.attn2.to_out.0.lora_down.weight` | `diffusion_model.mid_block.attentions.0.transformer_blocks.0.attn2.to_out.0.weight` |
 | Full/Diff | `bias` | `up_blocks.3.resnets.2.conv2.diff_b` | `diffusion_model.up_blocks.3.resnets.2.conv2.bias` |
 
-This comprehensive system ensures that nearly any LoRA-like adapter can be loaded and applied correctly, making ComfyUI a highly interoperable and powerful tool for model customization.
+This system ensures that nearly any LoRA-like adapter can be loaded and applied correctly, making ComfyUI a highly interoperable and powerful tool for model customization.

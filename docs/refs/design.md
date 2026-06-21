@@ -17,7 +17,7 @@ The provided corpus contains several key architectural patterns and algorithms t
 The most critical pattern is ComfyUI's dynamic, load-time key mapping system, primarily found in `comfy/lora.py` and `comfy/sd.py`. This system is the reason for ComfyUI's exceptional compatibility.
 
 - **Canonical Internal Format:** ComfyUI treats the original LDM/A1111 checkpoint format (e.g., `model.diffusion_model.input_blocks.1.1.proj_in.weight`) as its internal "ground truth".
-- **Dynamic Mapping:** The `model_lora_keys_unet` and `model_lora_keys_clip` functions build a comprehensive mapping dictionary (`key_map`) at runtime. This dictionary's keys are the various "foreign" LoRA key names found in the wild (e.g., `lora_unet_...`, `down_blocks.0...`, `lycoris_...`), and its values are the corresponding canonical ComfyUI key.
+- **Dynamic Mapping:** The `model_lora_keys_unet` and `model_lora_keys_clip` functions build a mapping dictionary (`key_map`) at runtime. This dictionary's keys are the various "foreign" LoRA key names found in the wild (e.g., `lora_unet_...`, `down_blocks.0...`, `lycoris_...`), and its values are the corresponding canonical ComfyUI key.
 - **Result:** This many-to-one mapping allows the core application logic to operate on a single, consistent set of keys, regardless of the source file's format. This "Rosetta Stone" approach is the central principle we will adopt for universal input handling.
 
 ### 2.2 The ComfyUI Weight Adapter Abstraction
@@ -480,7 +480,7 @@ This phase focuses on building the non-negotiable, foundational pillars of the n
       - **Architect a modular `ModelIdentifier` service** within the `KeyMapper`. This service will be responsible for detecting the base model's architecture (e.g., SDXL, FLUX) and its **constituent components** (e.g., UNet, CLIP-G) before mapping begins.
           - The detection logic will be data-driven, using a registry of `ModelSignature` objects that define a model by a few unique "sentinel" keys and a set of `ComponentSignature` definitions.
           - It will support pluggable `KeyCanonicalizer` components for handling model-specific key transformations (e.g., splitting `in_proj_weight` for SDXL).
-      - Populate its `MappingGenerator` plugins with the comprehensive mapping logic derived from ComfyUI for UNet and CLIP keys (SD 1.5, SDXL, Diffusers, kohya, etc.).
+      - Populate its `MappingGenerator` plugins with the mapping logic derived from ComfyUI for UNet and CLIP keys (SD 1.5, SDXL, Diffusers, kohya, etc.).
   3.  **Implement `ReferenceModel`:**
       - Adapt the existing `BaseCheckpoint` to become the new `ReferenceModel`.
       - Ensure its methods (e.g., `spectral_norm`) are keyed by **canonical LDM/A1111 keys**.
@@ -525,7 +525,7 @@ This phase focuses on robustness, completeness, and user experience.
   1.  **Expand Adapter Support:** Enhance the `Parser` to recognize all other adapter types (LoHa, LoKr, IA³, OFT, etc.) and correctly label them as `PASS_THROUGH`. The `Reconstructor` must be updated to correctly write these pass-through tensors back to the output file.
   2.  **Finalize `ResizeRecipeV2`:** Implement the full `recipes.toml` loading system for the command-line tool, replacing the recipe string.
   3.  **Refine CLI & Logging:** Improve command-line arguments and provide clear, actionable logging for all workflows.
-  4.  **Documentation:** Write comprehensive user documentation (`README.md`) explaining the new capabilities, workflows, and the `recipes.toml` format.
+  4.  **Documentation:** Write user documentation (`README.md`) explaining the new capabilities, workflows, and the `recipes.toml` format.
   5.  **Code Cleanup:** Refactor and add comments where necessary to improve maintainability.
 
 - **Deliverable:** A feature-complete, robust, and well-documented v2 library and command-line tool.
@@ -542,7 +542,7 @@ This phase focuses on robustness, completeness, and user experience.
 
 - **Task: Implement `KeyMapper` (The "Rosetta Stone")**
 
-  - `File: ComfyUI/comfy/lora.py`: **Primary source.** The `model_lora_keys_unet` and `model_lora_keys_clip` functions contain the definitive, most comprehensive mapping logic from various LoRA formats to canonical ComfyUI keys. This logic must be ported and generalized.
+  - `File: ComfyUI/comfy/lora.py`: **Primary source.** The `model_lora_keys_unet` and `model_lora_keys_clip` functions contain the definitive, most mapping logic from various LoRA formats to canonical ComfyUI keys. This logic must be ported and generalized.
   - `File: docs/refs/adapter_formats.md`: Provides a human-readable summary of the key mapping logic, including the two-stage (prefix-based and direct-map) strategy. Essential for understanding the _why_.
   - `File: docs/refs/checkpoint_formats.md`: Explains the difference between LDM/A1111 and Diffusers naming schemes, which is the core problem the `KeyMapper` solves.
   - `File: loralib/sdxl_mapper.py`: The existing, simplified key mapper. Serves as a starting point and a reference for what needs to be expanded upon.

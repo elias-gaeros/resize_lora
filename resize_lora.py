@@ -181,7 +181,7 @@ class ResizeRecipe:
                 )
                 logger.debug(
                     f"dim:{S.shape[0]:>3}->{mask.sum().item():<3}"
-                    f" rle_lora:{100. * re_lora:>6.2f}% rle_ckpt:{100. * re_ckpt:>6.2f}%"
+                    f" rle_lora:{100.0 * re_lora:>6.2f}% rle_ckpt:{100.0 * re_ckpt:>6.2f}%"
                     f" {decomposed_lora.name}"
                 )
 

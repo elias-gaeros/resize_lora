@@ -261,7 +261,7 @@ class PairedLoraModel:
                 base_info = checkpoint.lora2base[lora_key_in_file]
                 self.lora2base[lora_key_in_file] = base_info
             else:
-                # This LoRA key from the file is not recognized by the checkpoint's comprehensive mapper.
+                # This LoRA key from the file is not recognized by the checkpoint's mapper.
                 logging.warning(
                     f"LoRA key %r found in file but is not mapped to any base layer "
                     f"by the checkpoint's key_mapper.",

@@ -5,6 +5,9 @@ from collections import defaultdict
 import sys
 import struct
 
+MAX_HEADER_SIZE = 256 * 1024 * 1024
+STRING_POOL_REF = "__sft_string_pool_ref__"
+
 
 def parse_safetensors_header(file_path: Path) -> dict | None:
     """
@@ -28,6 +31,10 @@ def parse_safetensors_header(file_path: Path) -> dict | None:
             # Unpack the little-endian unsigned 64-bit integer
             header_len = struct.unpack("<Q", header_len_bytes)[0]
 
+            file_size = file_path.stat().st_size
+            if header_len > MAX_HEADER_SIZE or header_len > file_size - 8:
+                return None
+
             # Read the JSON header
             json_header_bytes = f.read(header_len)
             if len(json_header_bytes) < header_len:
@@ -38,7 +45,8 @@ def parse_safetensors_header(file_path: Path) -> dict | None:
             json_header_str = json_header_bytes.decode("utf-8")
 
             # Parse the JSON string into a Python dictionary
-            return json.loads(json_header_str)
+            header = json.loads(json_header_str)
+            return header if isinstance(header, dict) else None
 
     except (struct.error, json.JSONDecodeError, UnicodeDecodeError, IOError) as e:
         # These errors indicate a malformed file or a read error
@@ -78,6 +86,8 @@ def index_safetensors_file(file_path: Path) -> dict | None:
         # The header is a dictionary containing tensor info and potentially '__metadata__'
         # Extract the user metadata if it exists
         metadata = header.pop("__metadata__", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
         metadata.update(file_system_info)
 
         # The remaining keys in the header are the tensor names.
@@ -88,6 +98,8 @@ def index_safetensors_file(file_path: Path) -> dict | None:
         for key, value in header.items():
             # 'value' is a dict like {"dtype": "F16", "shape": [...], "data_offsets": [...]}
             # We only need dtype and shape.
+            if not isinstance(key, str) or not isinstance(value, dict):
+                continue
             tensor_info[key] = {
                 "dtype": value.get("dtype", "UNKNOWN"),
                 "shape": value.get("shape", []),
@@ -126,14 +138,11 @@ def build_tree_with_indices(keys: list[str]) -> dict:
 
 def parse_hierarchical_key(key: str) -> list[str]:
     """
-    Parses a tensor key into hierarchical parts, handling different naming conventions.
+    Parses a tensor key into lossless, dot-separated hierarchical parts.
 
-    For LoRA keys like 'lora_te1_text_model_encoder_layers_0_mlp_fc1.alpha':
-    - The underscore-separated part represents the module hierarchy
-    - The dot-separated part represents the tensor name within the module
-
-    For regular keys like 'unet.conv_in.weight':
-    - All parts are separated by dots
+    Underscores are meaningful in module names and cannot safely be treated as
+    separators. Splitting only on dots guarantees that flattening the tree
+    reconstructs every original key exactly.
 
     Args:
         key: The tensor key to parse
@@ -141,26 +150,7 @@ def parse_hierarchical_key(key: str) -> list[str]:
     Returns:
         List of hierarchical parts
     """
-    # Handle LoRA-style keys with underscore hierarchy
-    if key.startswith("lora_") and "." in key:
-        # Split into module path (underscore-separated) and tensor name (dot-separated)
-        if "." in key:
-            module_part, tensor_part = key.rsplit(".", 1)
-            # Split the module part by underscores to create hierarchy
-            module_parts = module_part.split("_")
-            # Add the tensor part
-            return module_parts + [tensor_part]
-
-    # Handle regular dot-separated keys
-    if "." in key and not key.startswith("lora_"):
-        return key.split(".")
-
-    # Handle keys that are only underscore-separated (legacy or special cases)
-    if "_" in key and not "." in key:
-        return key.split("_")
-
-    # Single part key
-    return [key]
+    return key.split(".")
 
 
 def tuplify(obj):
@@ -227,11 +217,13 @@ def compress_index(sft_index: dict, trunc_len: Optional[int] = None) -> dict:
             if trunc_len is not None and len(v) > trunc_len:
                 v = v[:trunc_len] + "..."
             if len(v) >= MIN_STRING_LEN_TO_POOL:
-                processed_user_meta[k] = string_to_idx[v]
+                processed_user_meta[k] = {STRING_POOL_REF: string_to_idx[v]}
             else:
                 processed_user_meta[k] = v
-        user_meta_tuple = tuplify(processed_user_meta)
-        group_key = (key_set, spec_indices_tuple, user_meta_tuple)
+        user_meta_json = json.dumps(
+            processed_user_meta, sort_keys=True, separators=(",", ":")
+        )
+        group_key = (key_set, spec_indices_tuple, user_meta_json)
         groups[group_key].append({"path": path, "file_meta": file_meta})
     print(f"Found {len(groups)} unique patterns of shareable properties.")
 
@@ -249,7 +241,9 @@ def compress_index(sft_index: dict, trunc_len: Optional[int] = None) -> dict:
     key_to_base_schema_ids = defaultdict(list)  # The new inverted index
 
     all_key_sets = {g[0] for g in groups.keys()}
-    sorted_key_sets = sorted(list(all_key_sets), key=len, reverse=True)
+    sorted_key_sets = sorted(
+        all_key_sets, key=lambda keys: (-len(keys), tuple(sorted(keys)))
+    )
 
     print("Building schema pool with optimized subset detection...")
     for key_set in sorted_key_sets:
@@ -280,7 +274,8 @@ def compress_index(sft_index: dict, trunc_len: Optional[int] = None) -> dict:
         if found_base_id is not None:
             # It's a subset, create a "view"
             base_key_map = base_schema_defs[found_base_id]
-            view_indices = [base_key_map.index(k) for k in sorted(list(key_set))]
+            base_indices = {key: index for index, key in enumerate(base_key_map)}
+            view_indices = [base_indices[key] for key in sorted(key_set)]
             schema_obj = {"base": found_base_id, "view": view_indices}
         else:
             # No superset found, this is a new base schema
@@ -298,7 +293,7 @@ def compress_index(sft_index: dict, trunc_len: Optional[int] = None) -> dict:
 
     # 3b. Assemble the rest of the structure
     print("Assembling instances...")
-    for (key_set, spec_indices_tuple, user_meta_tuple), items in groups.items():
+    for (key_set, spec_indices_tuple, user_meta_json), items in groups.items():
         schema_id = key_set_to_schema_id[key_set]
         spec_list_id = spec_list_map.setdefault(
             spec_indices_tuple, len(final_spec_lists)
@@ -306,10 +301,10 @@ def compress_index(sft_index: dict, trunc_len: Optional[int] = None) -> dict:
         if spec_list_id == len(final_spec_lists):
             final_spec_lists.append(list(spec_indices_tuple))
         user_meta_id = user_metadata_map.setdefault(
-            user_meta_tuple, len(final_user_metadata)
+            user_meta_json, len(final_user_metadata)
         )
         if user_meta_id == len(final_user_metadata):
-            final_user_metadata.append(dict(user_meta_tuple))
+            final_user_metadata.append(json.loads(user_meta_json))
         for item in items:
             path, file_meta = item["path"], item["file_meta"]
             instance = {"s": schema_id, "sl": spec_list_id, "m": user_meta_id}
@@ -329,7 +324,7 @@ def compress_index(sft_index: dict, trunc_len: Optional[int] = None) -> dict:
             final_instances[path] = instance
 
     return {
-        "_METADATA": {"version": "8.0", "source_format": "v7-compatible"},
+        "_METADATA": {"version": "8.1", "source_format": "v7-compatible"},
         "string_pool": string_pool,
         "spec_pool": spec_pool,
         "schemas": final_schemas,
@@ -360,6 +355,8 @@ class CompressedIndex:
         print(f"Loading and linking compressed index from: {compressed_path}")
         with open(compressed_path, "r", encoding="utf-8") as f:
             raw_data = json.load(f)
+
+        self._format_version = raw_data.get("_METADATA", {}).get("version", "8.0")
 
         # --- Step 1: Link data pools directly, replacing indices ---
 
@@ -415,29 +412,33 @@ class CompressedIndex:
     def _resolve_metadata_obj(self, meta_obj: Any, string_pool: List[str]) -> Any:
         """Recursively replaces integer indices with strings from the string_pool."""
         if isinstance(meta_obj, dict):
+            if set(meta_obj) == {STRING_POOL_REF}:
+                index = meta_obj[STRING_POOL_REF]
+                if not isinstance(index, int) or isinstance(index, bool):
+                    raise ValueError("Invalid string-pool reference")
+                return string_pool[index]
             return {
                 k: self._resolve_metadata_obj(v, string_pool)
                 for k, v in meta_obj.items()
             }
         if isinstance(meta_obj, list):
             return [self._resolve_metadata_obj(v, string_pool) for v in meta_obj]
-        if isinstance(meta_obj, int):
-            # The format replaces all pooled strings with their int index.
-            # This is a safe assumption for compliant files.
+        if isinstance(meta_obj, int) and not isinstance(meta_obj, bool) and self._format_version == "8.0":
+            # V8.0 used untagged integer references. Preserve compatibility,
+            # although genuine integer metadata in that format is ambiguous.
             return string_pool[meta_obj]
         return meta_obj
 
     def _flatten_tree(self, tree: Dict, prefix="") -> List[Tuple[str, int]]:
         """
         Recursively flattens a structure_tree back to a list of (key, index) tuples.
-        Correctly handles the special `''` key for leaf nodes and reconstructs
-        the original key format (underscore vs dot separation).
+        Correctly handles the special `''` key for leaf nodes.
         """
         items = []
         for key, value in tree.items():
             # If the key is our special "leaf" indicator, we've found a full tensor key.
             if key == "":
-                # The prefix holds the full key path, reconstruct original format
+                # The prefix holds the full key path.
                 items.append((prefix, value))
             else:
                 # Otherwise, this is a branch. Recurse deeper.
@@ -447,17 +448,12 @@ class CompressedIndex:
 
     def _reconstruct_key_path(self, prefix: str, key: str) -> str:
         """
-        Reconstructs the proper key path format when building the tree back.
-
-        For LoRA keys, maintains underscore separation until the final tensor name.
-        For regular keys, uses dot separation.
+        Reconstructs a key path when building the tree back.
         """
         if not prefix:
             return key
 
-        # If this looks like a LoRA hierarchy, use underscores until tensor names
-        if prefix.startswith("lora"):
-            # Common tensor names that should be dot-separated
+        if self._format_version == "8.0":
             tensor_names = {
                 "weight",
                 "bias",
@@ -487,11 +483,9 @@ class CompressedIndex:
 
             if key in tensor_names:
                 return f"{prefix}.{key}"
-            else:
-                return f"{prefix}_{key}"
-        else:
-            # Regular non-LoRA keys use dot separation
-            return f"{prefix}.{key}"
+            return f"{prefix}_{key}"
+
+        return f"{prefix}.{key}"
 
     def get_key_map(self, schema_id: int) -> List[str]:
         """

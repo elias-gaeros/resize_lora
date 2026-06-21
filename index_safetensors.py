@@ -6,6 +6,8 @@ from tqdm import tqdm
 import sys
 import struct
 
+MAX_HEADER_SIZE = 256 * 1024 * 1024
+
 
 def parse_safetensors_header(file_path: Path) -> dict | None:
     """
@@ -29,6 +31,10 @@ def parse_safetensors_header(file_path: Path) -> dict | None:
             # Unpack the little-endian unsigned 64-bit integer
             header_len = struct.unpack("<Q", header_len_bytes)[0]
 
+            file_size = file_path.stat().st_size
+            if header_len > MAX_HEADER_SIZE or header_len > file_size - 8:
+                return None
+
             # Read the JSON header
             json_header_bytes = f.read(header_len)
             if len(json_header_bytes) < header_len:
@@ -39,7 +45,8 @@ def parse_safetensors_header(file_path: Path) -> dict | None:
             json_header_str = json_header_bytes.decode("utf-8")
 
             # Parse the JSON string into a Python dictionary
-            return json.loads(json_header_str)
+            header = json.loads(json_header_str)
+            return header if isinstance(header, dict) else None
 
     except (struct.error, json.JSONDecodeError, UnicodeDecodeError, IOError) as e:
         # These errors indicate a malformed file or a read error
@@ -82,6 +89,8 @@ def index_safetensors_file(file_path: Path) -> dict | None:
         # The header is a dictionary containing tensor info and potentially '__metadata__'
         # Extract the user metadata if it exists
         metadata = header.pop("__metadata__", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
         metadata.update(file_system_info)
 
         # The remaining keys in the header are the tensor names.
@@ -92,6 +101,8 @@ def index_safetensors_file(file_path: Path) -> dict | None:
         for key, value in header.items():
             # 'value' is a dict like {"dtype": "F16", "shape": [...], "data_offsets": [...]}
             # We only need dtype and shape.
+            if not isinstance(key, str) or not isinstance(value, dict):
+                continue
             tensor_info[key] = {
                 "dtype": value.get("dtype", "UNKNOWN"),
                 "shape": value.get("shape", []),
@@ -133,7 +144,7 @@ def main():
 
     # --- 1. Find all .safetensors files ---
     print("Searching for .safetensors files...")
-    files_to_process = []
+    files_to_process = {}
     for dir_path_str in args.directories:
         dir_path = Path(dir_path_str)
         if not dir_path.is_dir():
@@ -142,7 +153,8 @@ def main():
                 file=sys.stderr,
             )
             continue
-        files_to_process.extend(dir_path.rglob("*.safetensors"))
+        for file_path in dir_path.rglob("*.safetensors"):
+            files_to_process[str(file_path.resolve())] = file_path.resolve()
 
     if not files_to_process:
         print("No .safetensors files found. Exiting.")
@@ -152,7 +164,7 @@ def main():
 
     # --- 2. Process each file and build the index ---
     sft_index = {}
-    for file_path in tqdm(files_to_process, desc="Indexing files"):
+    for file_path in tqdm(sorted(files_to_process.values()), desc="Indexing files"):
         file_data = index_safetensors_file(file_path)
         if file_data:
             # Use the absolute path as a unique key in the index

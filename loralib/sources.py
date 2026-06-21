@@ -11,7 +11,11 @@ class AdapterFileSource:
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
-        self._fd = safetensors.torch.safe_open(self.path, framework="pt", device="cpu")
+        self._context = safetensors.torch.safe_open(
+            self.path, framework="pt", device="cpu"
+        )
+        self._fd = self._context.__enter__()
+        self._closed = False
 
     def keys(self) -> Iterable[str]:
         return self._fd.keys()
@@ -30,9 +34,9 @@ class AdapterFileSource:
         return len(list(self._fd.keys()))
 
     def close(self) -> None:
-        close = getattr(self._fd, "close", None)
-        if callable(close):
-            close()
+        if not self._closed:
+            self._context.__exit__(None, None, None)
+            self._closed = True
 
     def __enter__(self):
         return self

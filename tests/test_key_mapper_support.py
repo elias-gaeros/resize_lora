@@ -44,7 +44,17 @@ def test_key_mapper_builds_and_maps_basic_comfyui_prefixes(tmp_path):
     assert result.matched_rule == "DictionaryLookup"
 
 
-@pytest.mark.parametrize("suffix", [".lora_A.weight", ".lora_proj_down"])
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        ".lora_A.weight",
+        ".lora_proj_down",
+        ".hada_w1_a.weight",
+        ".lokr_w1.weight",
+        ".t1.weight",
+        ".ia3_input_mask.weight",
+    ],
+)
 def test_key_mapper_maps_direct_comfyui_dit_formats(tmp_path, suffix):
     base_path = tmp_path / "dit.safetensors"
     canonical = "double_blocks.0.img_attn.proj.weight"
@@ -102,6 +112,29 @@ def test_key_mapper_maps_diffusers_attention_aliases(tmp_path):
     assert result.canonical_key == canonical
 
 
+@pytest.mark.parametrize(
+    ("canonical", "adapter_key"),
+    [
+        (
+            "diffusion_model.double_blocks.0.img_attn.proj.weight",
+            "diffusion_model.double_blocks.0.img_attn.proj.lora_down.weight",
+        ),
+        (
+            "model.diffusion_model.double_blocks.0.img_attn.proj.weight",
+            "lora_unet_double_blocks_0_img_attn_proj.lora_down.weight",
+        ),
+    ],
+)
+def test_key_mapper_detects_wrapped_dit_checkpoints(tmp_path, canonical, adapter_key):
+    base_path = tmp_path / "wrapped-dit.safetensors"
+    _write_safetensors(base_path, {canonical: torch.zeros((2, 2))})
+
+    key_mapper = KeyMapper(base_path)
+
+    assert "DiT" in key_mapper.context.components_present
+    assert key_mapper.map_from_lora(adapter_key).canonical_key == canonical
+
+
 def test_adapter_file_source_reads_keys_and_metadata(tmp_path):
     adapter_path = tmp_path / "adapter.safetensors"
     _write_safetensors(
@@ -121,6 +154,8 @@ def test_adapter_file_source_reads_keys_and_metadata(tmp_path):
     }
     assert source.metadata()["ss_training"] == "demo"
     assert torch.equal(source.get_tensor("block.lora_down.weight"), torch.ones((2, 2)))
+    source.close()
+    source.close()
 
 
 def test_compatibility_penalty_uses_key_mapper_model_types():

@@ -24,6 +24,7 @@ This tool is primarily designed for **SDXL LoRA/LoCon models**. Support for othe
 - [Understanding Verbose Output (`-vv`)](#understanding-verbose-output--vv)
 - [Technical Details: Spectral vs. Frobenius Norm](#technical-details-spectral-vs-frobenius-norm)
 - [Why is it so fast?](#why-is-it-so-fast)
+- [Indexing and Key-Mapping Tools](#indexing-and-key-mapping-tools)
 - [Evaluation](#evaluation)
 - [License](#license)
 - [Contributing](#contributing)
@@ -281,6 +282,61 @@ To avoid redundant calculations, the tool automatically caches these base model 
 - On subsequent runs, or when processing other LoRA files against the _same_ base checkpoint, the tool reads the required norms directly from the cache file.
 
 This caching mechanism speeds up processing after the first run, particularly when applying multiple recipes or resizing batches of LoRAs that share the same base model.
+
+## Indexing and Key-Mapping Tools
+
+The repository also contains development tools for inspecting safetensors schemas and
+evaluating adapter-key mappings. These tools are separate from the SDXL resize path;
+`resize_lora.py` still uses its existing SDXL mapper.
+
+Create a raw header-only index without loading tensor payloads:
+
+```sh
+python index_safetensors.py /path/to/models /path/to/loras -o sft_index.json
+```
+
+Compress the index for the summary and mapping harnesses:
+
+```sh
+python - <<'PY'
+import json
+from pathlib import Path
+from compressed_sft_index import compress_index
+
+source = json.loads(Path("sft_index.json").read_text(encoding="utf-8"))
+compressed = compress_index(source)
+Path("compressed_sft_index.json").write_text(
+    json.dumps(compressed), encoding="utf-8"
+)
+PY
+```
+
+Inspect its schemas or evaluate them against one or more base checkpoints:
+
+```sh
+python summarize_sft_index.py compressed_sft_index.json --stats --sample 5
+python test_key_mapper.py compressed_sft_index.json /path/to/base.safetensors -v
+```
+
+To create a small, diverse, duplicate-free key fixture from a large LoRA corpus:
+
+```sh
+python extract_lora_keys.py /path/to/loras -o lora_key_fixtures.json --limit 24
+```
+
+`--limit 0` retains every distinct key schema. A fixture contains names and source
+paths only, not tensor data. The source paths may still disclose local filenames, so
+review the JSON before publishing it.
+
+The experimental `loralib.key_mapper.KeyMapper` currently recognizes selected SD,
+SDXL, SD3.5, FLUX/Chroma, Diffusers, PEFT, LyCORIS, and SVDQuant naming patterns.
+Recognition is base-model-dependent and is not a claim that every adapter algorithm
+can be resized. In particular, schemas using Klein `.R` and normalization `.scale`
+keys are indexed as `unknown` and are not mapped.
+
+See [the key-mapper design](docs/refs/keymapper%20design.md) and
+[the data-driven QA workflow](docs/refs/data_driven_dev.md) for implementation details
+and current validation scope.
 
 ## Evaluation
 

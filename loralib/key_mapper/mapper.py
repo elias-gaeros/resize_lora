@@ -54,18 +54,9 @@ class KeyMapper:
             f"Total unique mappings in 'Rosetta Stone': {len(self.final_mapping)}"
         )
         
-        # Optimize suffix matching
-        self.engine_suffixes = sorted(list(self.SUFFIXES), key=len, reverse=True)
-        
-        # Pre-compute suffix lengths for faster matching
-        self.suffix_lengths = {suffix: len(suffix) for suffix in self.SUFFIXES}
-        
-        # Fast path: most common suffixes first
-        self.common_suffixes = [
-            ".lora_down.weight", ".lora_up.weight", ".alpha", 
-            ".lora_A.weight", ".lora_B.weight", ".lora_proj_down",
-            ".lora_proj_up", ".weight", ".bias"
-        ]
+        # Longest-first matching is required because several adapter suffixes also
+        # end in the generic ".weight" suffix.
+        self.engine_suffixes = sorted(self.SUFFIXES, key=len, reverse=True)
         
         # Populate stats for reporting
         self.stats['base_keys_found'] = len(self.context.base_keys)
@@ -179,19 +170,30 @@ class KeyMapper:
         if any(k.startswith("model.diffusion_model.") for k in keys):
             components.add("UNet")
 
-        # FLUX and Chroma (DiT models)
-        has_double_blocks = any(k.startswith("double_blocks.") for k in keys)
-        has_single_blocks = any(k.startswith("single_blocks.") for k in keys)
+        # FLUX and Chroma checkpoints occur both bare and under common wrappers.
+        dit_keys = set()
+        for key in keys:
+            for prefix in ("model.diffusion_model.", "diffusion_model."):
+                if key.startswith(prefix):
+                    key = key[len(prefix) :]
+                    break
+            dit_keys.add(key)
+
+        has_double_blocks = any(k.startswith("double_blocks.") for k in dit_keys)
+        has_single_blocks = any(k.startswith("single_blocks.") for k in dit_keys)
 
         if has_double_blocks or has_single_blocks:
             components.add("DiT")
             # Check for the unique layer to differentiate them
-            if any(k.startswith("distilled_guidance_layer.") for k in keys):
+            if any(k.startswith("distilled_guidance_layer.") for k in dit_keys):
                 model_type = "Chroma"
-            elif any(k.startswith("double_stream_modulation_") for k in keys):
+            elif any(k.startswith("double_stream_modulation_") for k in dit_keys):
                 model_type = "FLUX.2-Klein"
             # FLUX's unique feature is modulation layers
-            elif any("modulation.lin.weight" in k and k.startswith("single_blocks") for k in keys):
+            elif any(
+                "modulation.lin.weight" in k and k.startswith("single_blocks")
+                for k in dit_keys
+            ):
                 model_type = "FLUX-dev"
 
             # FLUX/Chroma also include text encoders, let's detect them
@@ -204,12 +206,6 @@ class KeyMapper:
         return model_type, components
 
     def _strip_suffix(self, raw_key: str) -> Optional[tuple[str, str]]:
-        # Fast path: check most common suffixes first
-        for suffix in self.common_suffixes:
-            if raw_key.endswith(suffix):
-                return raw_key[:-len(suffix)], suffix
-        
-        # Fallback: check all suffixes (but still optimized)
         for suffix in self.engine_suffixes:
             if raw_key.endswith(suffix):
                 return raw_key[:-len(suffix)], suffix

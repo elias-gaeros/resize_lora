@@ -63,13 +63,12 @@ def cached(cache_name):
     def decorator(fun):
         def wrapper(self, key, *args, **kwargs):
             root_cache = self._cache
-            cache = root_cache[cache_name]
+            cache = root_cache.get(cache_name)
             if cache is None:
                 cache = root_cache[cache_name] = {}
-            cached = cache.get(key)
-            if cached is None:
-                cached = cache[key] = fun(self, key, *args, **kwargs)
-            return cached
+            if key not in cache:
+                cache[key] = fun(self, key, *args, **kwargs)
+            return cache[key]
 
         return update_wrapper(wrapper, fun)
 

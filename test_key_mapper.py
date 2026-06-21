@@ -401,7 +401,10 @@ def calculate_compatibility_detailed(
     if has_sdxl_unet and base_context.model_type == "SD3.5":
         # SDXL UNet keys are completely incompatible with SD3.5
         architecture_penalty = 0.5
-    elif has_sd3_unet and base_context.model_type in ["SDXL", "SD1.5"]:
+    elif has_sd3_unet and (
+        base_context.model_type.startswith("SDXL")
+        or base_context.model_type == "SD1.x/2.x"
+    ):
         # SD3.5 UNet keys are completely incompatible with SDXL/SD1.5
         architecture_penalty = 0.5
     elif has_flux_unet and base_context.model_type not in ["FLUX-dev", "Chroma"]:

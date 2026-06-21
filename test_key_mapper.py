@@ -43,7 +43,7 @@ class CheckpointAssessor:
         ".alpha", ".lora_down.weight", ".lora_up.weight", ".lora_A.weight",
         ".lora_B.weight", ".hada_w1_a.weight", ".hada_w1_b.weight",
         ".hada_w2_a.weight", ".hada_w2_b.weight", ".lokr_w1.weight",
-        ".lokr_w2.weight", ".diff",
+        ".lokr_w2.weight", ".lora_proj_down", ".lora_proj_up", ".diff",
     }
 
     def __init__(self, keys: [Dict, List, Set]):
@@ -227,7 +227,15 @@ class Reporter:
                         (0.7, 1.0),
                     ]
                     for low, high in score_ranges:
-                        count = sum(1 for s in scores if low <= s < high)
+                        count = sum(
+                            1
+                            for s in scores
+                            if (
+                                low <= s <= high
+                                if high == 1.0
+                                else low <= s < high
+                            )
+                        )
                         if count > 0:
                             print(f"    - Score {low:.1f}-{high:.1f}: {count} adapters")
 
@@ -394,7 +402,12 @@ def calculate_compatibility_detailed(
     has_flux_unet = any("double_blocks" in key or "single_blocks" in key for key in source_module_keys)
     
     # Check for FLUX vs Chroma specific mismatches
-    has_flux_modulation = any("modulation_lin" in key or "_mod_lin" in key for key in source_module_keys)
+    has_flux_modulation = any(
+        "modulation_lin" in key
+        or "_mod_lin" in key
+        or "stream_modulation" in key
+        for key in source_module_keys
+    )
     has_chroma_guidance = any("distilled_guidance_layer" in key for key in source_module_keys)
     
     # Apply architecture penalties
@@ -407,13 +420,13 @@ def calculate_compatibility_detailed(
     ):
         # SD3.5 UNet keys are completely incompatible with SDXL/SD1.5
         architecture_penalty = 0.5
-    elif has_flux_unet and base_context.model_type not in ["FLUX-dev", "Chroma"]:
+    elif has_flux_unet and "DiT" not in base_context.components_present:
         # FLUX/Chroma UNet keys are incompatible with other architectures
         architecture_penalty = 0.5
     elif has_flux_modulation and base_context.model_type == "Chroma":
         # FLUX modulation keys are incompatible with Chroma
         architecture_penalty = 0.5
-    elif has_chroma_guidance and base_context.model_type == "FLUX-dev":
+    elif has_chroma_guidance and base_context.model_type.startswith("FLUX"):
         # Chroma guidance keys are incompatible with FLUX
         architecture_penalty = 0.5
     
@@ -722,6 +735,7 @@ def main():
 
             matched_km = key_mappers[best_match]
             base_name = best_match.name
+            reporter.stats["adapters_tested"] += num_files_in_schema
             
             # --- Perform mapping test once for the entire schema ---
             base_context = matched_km.context
@@ -765,7 +779,7 @@ def main():
                             return "FLUX Modulation" if base_context.model_type == "FLUX-dev" else None
                         
                         # Generic FLUX/Chroma keys (without modulation/guidance)
-                        elif base_context.model_type in ["FLUX-dev", "Chroma"]:
+                        elif "DiT" in base_context.components_present:
                             return "FLUX/Chroma UNet"
                     
                     # Generic UNet/DiT keys

@@ -19,6 +19,7 @@ class KeyMapper:
     SUFFIXES: Set[str] = {
         ".alpha", ".dora_scale", ".lora_down.weight", ".lora_up.weight",
         ".lora_mid.weight", ".lora_A.weight", ".lora_B.weight",
+        ".lora_proj_down", ".lora_proj_up",
         ".hada_w1_a.weight", ".hada_w1_b.weight", ".hada_w2_a.weight",
         ".hada_w2_b.weight", ".lokr_w1.weight", ".lokr_w2.weight",
         ".lokr_w1", ".lokr_w2", ".lokr_w1_a", ".lokr_w1_b", ".lokr_w2_a", ".lokr_w2_b",
@@ -32,6 +33,7 @@ class KeyMapper:
         if generators is None:
             generators = DEFAULT_GENERATORS
 
+        base_model_path = Path(base_model_path)
         logger.info(f"Initializing KeyMapper with base model: {base_model_path.name}")
         self.base_model_path = base_model_path
         self.generators = generators  # Store the generators for tracing
@@ -42,19 +44,11 @@ class KeyMapper:
 
         logger.info("Building comprehensive key map from generators...")
         for generator in generators:
-            try:
-                # *** CHANGE IS HERE: Pass the in-progress map to the generator ***
-                # This allows generators to build upon previous results.
-                new_mappings = generator.generate(self.context, self.final_mapping)
-                self.final_mapping.update(new_mappings)
-                logger.info(
-                    f"  - Ran {generator.__class__.__name__}, added/updated {len(new_mappings)} mappings."
-                )
-            except Exception as e:
-                logger.error(
-                    f"  - FAILED to run {generator.__class__.__name__}: {e}",
-                    exc_info=True,
-                )
+            new_mappings = generator.generate(self.context, self.final_mapping)
+            self._merge_mappings(new_mappings, generator)
+            logger.info(
+                f"  - Ran {generator.__class__.__name__}, added/updated {len(new_mappings)} mappings."
+            )
 
         logger.info(
             f"Total unique mappings in 'Rosetta Stone': {len(self.final_mapping)}"
@@ -69,7 +63,8 @@ class KeyMapper:
         # Fast path: most common suffixes first
         self.common_suffixes = [
             ".lora_down.weight", ".lora_up.weight", ".alpha", 
-            ".lora_A.weight", ".lora_B.weight", ".weight", ".bias"
+            ".lora_A.weight", ".lora_B.weight", ".lora_proj_down",
+            ".lora_proj_up", ".weight", ".bias"
         ]
         
         # Populate stats for reporting
@@ -77,6 +72,18 @@ class KeyMapper:
         self.stats['detected_model_type'] = self.context.model_type
         self.stats['detected_components'] = ", ".join(sorted(list(self.context.components_present)))
         self.stats['total_mappings'] = len(self.final_mapping)
+
+    def _merge_mappings(
+        self, new_mappings: Dict[str, str], generator: MappingGenerator
+    ) -> None:
+        for foreign_key, canonical_key in new_mappings.items():
+            existing = self.final_mapping.get(foreign_key)
+            if existing is not None and existing != canonical_key:
+                raise ValueError(
+                    f"{generator.__class__.__name__} generated conflicting mapping "
+                    f"for {foreign_key!r}: {existing!r} != {canonical_key!r}"
+                )
+        self.final_mapping.update(new_mappings)
 
     def _initialize_context(self, model_path: Path) -> ModelContext:
         try:
@@ -176,11 +183,13 @@ class KeyMapper:
         has_double_blocks = any(k.startswith("double_blocks.") for k in keys)
         has_single_blocks = any(k.startswith("single_blocks.") for k in keys)
 
-        if has_double_blocks and has_single_blocks:
+        if has_double_blocks or has_single_blocks:
             components.add("DiT")
             # Check for the unique layer to differentiate them
             if any(k.startswith("distilled_guidance_layer.") for k in keys):
                 model_type = "Chroma"
+            elif any(k.startswith("double_stream_modulation_") for k in keys):
+                model_type = "FLUX.2-Klein"
             # FLUX's unique feature is modulation layers
             elif any("modulation.lin.weight" in k and k.startswith("single_blocks") for k in keys):
                 model_type = "FLUX-dev"

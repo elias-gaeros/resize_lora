@@ -54,6 +54,14 @@ class ComfyUIPrefixGenerator(MappingGenerator):
                     mapping[lora_key_base] = base_key
                     break
 
+            base_stem = base_key[: -len(".weight")]
+            mapping[base_stem] = base_key
+            if base_stem.startswith("model.diffusion_model."):
+                unwrapped = base_stem[len("model.") :]
+                mapping[unwrapped] = base_key
+            elif "DiT" in context.components_present:
+                mapping[f"diffusion_model.{base_stem}"] = base_key
+
         return mapping
 
 
@@ -377,52 +385,122 @@ class DiffusersMappingGenerator(MappingGenerator):
         mapping = {}
         base_keys = context.base_keys
 
-        # --- UNet Mapping (FUNCTIONAL IMPLEMENTATION) ---
-        # This is a robust implementation that handles the vast majority of UNet keys.
-        unet_key_map = {}
-        # We find corresponding keys by matching the numeric parts of the paths.
-        # e.g. input_blocks.1.1.proj_in -> down_blocks.0.attentions.1.proj_in
-        # The block numbers are the key.
-        for key in base_keys:
-            if not key.startswith("model.diffusion_model."):
-                continue
-            
-            m = re.match(r"model\.diffusion_model\.((input_blocks)\.(\d+)\.(\d+)|(middle_block)\.(\d+)|(output_blocks)\.(\d+)\.(\d+))", key)
-            if m is None:
-                continue
+        prefix = "model.diffusion_model."
+        ldm_keys = {
+            key[len(prefix) :]: key
+            for key in base_keys
+            if key.startswith(prefix) and key.endswith(".weight")
+        }
 
-            base_part = key[len("model.diffusion_model."):]
-            if m.groups()[1] == "input_blocks": # input_blocks.i.j
-                block_id = int(m.groups()[2])
-                sub_block_id = int(m.groups()[3])
-                if "attentions" in base_part:
-                    unet_key_map[f"down_blocks.{block_id-1}.attentions.{sub_block_id}"] = base_part
-                elif "resnets" in base_part:
-                    unet_key_map[f"down_blocks.{block_id-1}.resnets.{sub_block_id}"] = base_part
-            elif m.groups()[4] == "middle_block": # middle_block.i
-                 block_id = int(m.groups()[5])
-                 if "attentions" in base_part:
-                    unet_key_map[f"mid_block.attentions.{block_id}"] = base_part
-                 elif "resnets" in base_part:
-                    unet_key_map[f"mid_block.resnets.{block_id}"] = base_part
-            elif m.groups()[6] == "output_blocks": # output_blocks.i.j
-                 block_id = int(m.groups()[7])
-                 sub_block_id = int(m.groups()[8])
-                 if "attentions" in base_part:
-                    unet_key_map[f"up_blocks.{block_id}.attentions.{sub_block_id}"] = base_part
-                 elif "resnets" in base_part:
-                    unet_key_map[f"up_blocks.{block_id}.resnets.{sub_block_id}"] = base_part
+        input_blocks = sorted(
+            {int(match.group(1)) for key in ldm_keys if (match := re.match(r"input_blocks\.(\d+)\.", key))}
+        )
+        input_locations = {}
+        stage = slot = 0
+        for block in input_blocks:
+            if block == 0:
+                continue
+            input_locations[block] = (stage, slot)
+            if any(key.startswith(f"input_blocks.{block}.0.op.") for key in ldm_keys):
+                stage, slot = stage + 1, 0
+            else:
+                slot += 1
 
-        # Now, build the final diffusers mapping
-        for diffusers_base, ldm_base in unet_key_map.items():
-            for key in base_keys:
-                if key.startswith(f"model.diffusion_model.{ldm_base}"):
-                    suffix = key[len(f"model.diffusion_model.{ldm_base}")+1:-len(".weight")]
-                    diffusers_key = f"{diffusers_base}.{suffix}"
-                    mapping[diffusers_key] = key
-                    mapping[f"unet.{diffusers_key}"] = key
+        output_blocks = sorted(
+            {int(match.group(1)) for key in ldm_keys if (match := re.match(r"output_blocks\.(\d+)\.", key))}
+        )
+        output_locations = {}
+        stage = slot = 0
+        for block in output_blocks:
+            output_locations[block] = (stage, slot)
+            if any(re.match(rf"output_blocks\.{block}\.\d+\.conv\.", key) for key in ldm_keys):
+                stage, slot = stage + 1, 0
+            else:
+                slot += 1
+
+        for ldm_key, canonical_key in ldm_keys.items():
+            diffusers_key = self._to_diffusers_key(
+                ldm_key, input_locations, output_locations
+            )
+            if diffusers_key is None:
+                continue
+            diffusers_stem = diffusers_key[: -len(".weight")]
+            aliases = {diffusers_stem, f"unet.{diffusers_stem}"}
+            if diffusers_stem.endswith(".to_out.0"):
+                aliases.add(diffusers_stem[:-2])
+                aliases.add(f"unet.{diffusers_stem[:-2]}")
+            underscored = diffusers_stem.replace(".", "_")
+            aliases.update({f"lora_unet_{underscored}", f"lycoris_{underscored}"})
+            for alias in aliases:
+                mapping[alias] = canonical_key
 
         return mapping
+
+    @staticmethod
+    def _to_diffusers_key(key, input_locations, output_locations):
+        basic = {
+            "input_blocks.0.0.weight": "conv_in.weight",
+            "out.0.weight": "conv_norm_out.weight",
+            "out.2.weight": "conv_out.weight",
+            "time_embed.0.weight": "time_embedding.linear_1.weight",
+            "time_embed.2.weight": "time_embedding.linear_2.weight",
+            "label_emb.0.0.weight": "add_embedding.linear_1.weight",
+            "label_emb.0.2.weight": "add_embedding.linear_2.weight",
+        }
+        if key in basic:
+            return basic[key]
+
+        resnet_parts = {
+            "in_layers.0": "norm1",
+            "in_layers.2": "conv1",
+            "emb_layers.1": "time_emb_proj",
+            "out_layers.0": "norm2",
+            "out_layers.3": "conv2",
+            "skip_connection": "conv_shortcut",
+        }
+
+        match = re.match(r"input_blocks\.(\d+)\.(\d+)\.(.+)", key)
+        if match:
+            block, subblock, suffix = int(match.group(1)), int(match.group(2)), match.group(3)
+            if block not in input_locations:
+                return None
+            stage, slot = input_locations[block]
+            if subblock == 0 and suffix.startswith("op."):
+                return f"down_blocks.{stage}.downsamplers.0.conv.{suffix[3:]}"
+            if subblock == 0:
+                suffix = DiffusersMappingGenerator._translate_resnet(suffix, resnet_parts)
+                return f"down_blocks.{stage}.resnets.{slot}.{suffix}"
+            return f"down_blocks.{stage}.attentions.{slot}.{suffix}"
+
+        match = re.match(r"middle_block\.(\d+)\.(.+)", key)
+        if match:
+            block, suffix = int(match.group(1)), match.group(2)
+            if block == 1:
+                return f"mid_block.attentions.0.{suffix}"
+            if block in (0, 2):
+                suffix = DiffusersMappingGenerator._translate_resnet(suffix, resnet_parts)
+                return f"mid_block.resnets.{block // 2}.{suffix}"
+
+        match = re.match(r"output_blocks\.(\d+)\.(\d+)\.(.+)", key)
+        if match:
+            block, subblock, suffix = int(match.group(1)), int(match.group(2)), match.group(3)
+            if block not in output_locations:
+                return None
+            stage, slot = output_locations[block]
+            if suffix.startswith("conv."):
+                return f"up_blocks.{stage}.upsamplers.0.{suffix}"
+            if subblock == 0:
+                suffix = DiffusersMappingGenerator._translate_resnet(suffix, resnet_parts)
+                return f"up_blocks.{stage}.resnets.{slot}.{suffix}"
+            return f"up_blocks.{stage}.attentions.{slot}.{suffix}"
+        return None
+
+    @staticmethod
+    def _translate_resnet(suffix, translations):
+        for ldm_part, diffusers_part in translations.items():
+            if suffix == f"{ldm_part}.weight":
+                return f"{diffusers_part}.weight"
+        return suffix
 
 
 class LyCORISPrefixGenerator(MappingGenerator):

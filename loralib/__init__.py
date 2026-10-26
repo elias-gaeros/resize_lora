@@ -256,17 +256,34 @@ class PairedLoraModel:
 
         # Iterate through LoRA keys found in the LoRA file
         for lora_key_in_file in lora_file_keys_alpha_stripped:
-            if lora_key_in_file in checkpoint.lora2base:
+            if (
+                lora_key_in_file in checkpoint.lora2base
+                and f"{lora_key_in_file}.lora_down.weight" in lora_dict.keys
+            ):
                 # This LoRA key from the file is a known name/alias/part_name to the checkpoint's mapper
                 base_info = checkpoint.lora2base[lora_key_in_file]
                 self.lora2base[lora_key_in_file] = base_info
-            else:
-                # This LoRA key from the file is not recognized by the checkpoint's mapper.
-                logging.warning(
-                    f"LoRA key %r found in file but is not mapped to any base layer "
-                    f"by the checkpoint's key_mapper.",
-                    lora_key_in_file,
-                )
+
+        # Tensors outside the resizable layers (LyCORIS .diff, LoHa/LoKr factors,
+        # layers without a base mapping) are copied to the output unchanged.
+        resized_keys = {
+            f"{name}.{suffix}"
+            for name in self.lora2base
+            for suffix in ("alpha", "lora_down.weight", "lora_up.weight", "dora_scale")
+        }
+        unresized_keys = sorted(lora_dict.keys - resized_keys)
+        # A merge has no defined way to combine arbitrary tensors, so it drops them.
+        self.passthrough_keys = (
+            unresized_keys if isinstance(lora_dict, LoRADict) else []
+        )
+        if unresized_keys:
+            unresized_layers = sorted({k.split(".", 1)[0] for k in unresized_keys})
+            logging.warning(
+                "%d LoRA layers cannot be resized and are %s: %s",
+                len(unresized_layers),
+                "copied unchanged" if self.passthrough_keys else "dropped",
+                ", ".join(unresized_layers),
+            )
 
         # Logging for unmapped base layers (checkpoint layers that weren't covered by any LoRA in the file)
         # Collect all unique base_infos that the checkpoint expects LoRAs for.
@@ -302,7 +319,7 @@ class PairedLoraModel:
                 )
 
                 logging.info(
-                    "No LoRA layer found in file for base layer %r %s (e.g., an expected LoRA key was: %r)",
+                    "No resizable LoRA layer in file for base layer %r %s (e.g., an expected LoRA key was: %r)",
                     base_key_str_for_log,
                     tuple(shape),
                     representative_lora_key,
@@ -316,6 +333,9 @@ class PairedLoraModel:
 
     def keys(self):
         return self.lora2base.keys()
+
+    def passthrough_tensors(self):
+        return {k: self.lora_dict.lora_fd.get_tensor(k) for k in self.passthrough_keys}
 
     def decompose_layer(
         self, lora_key, **kwargs

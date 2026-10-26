@@ -109,7 +109,9 @@ class ResizeRecipe:
         compute_kwargs=dict(dtype=torch.float32),
         output_dtype=torch.float16,
         output_elem_size=None,
+        fixed_size=0,
     ):
+        """fixed_size: bytes of the tensors copied unchanged, counted against `size=`"""
         print_scores = logger.isEnabledFor(logging.INFO)
         print_layers = logger.isEnabledFor(logging.DEBUG)
         needs_flat_scores = print_scores or self.target_size is not None
@@ -142,6 +144,7 @@ class ResizeRecipe:
                     dtype=torch.int32,
                 ).T
             )[order].cumsum(0)
+            cum_sizes += fixed_size
             target_size_bytes = self.target_size * BYTES_IN_MEGABYTE
             if target_size_bytes < cum_sizes[-1]:
                 idx = torch.searchsorted(cum_sizes, target_size_bytes).item()
@@ -226,13 +229,27 @@ def process_lora_model(
             continue
         lora_layers.append(decomposed_lora)
 
+    passthrough = {
+        k: v.to(device="cpu", dtype=output_dtype if v.is_floating_point() else v.dtype)
+        for k, v in lora_model.passthrough_tensors().items()
+    }
+    passthrough_size = sum(v.numel() * v.element_size() for v in passthrough.values())
+
     for recipe in recipes:
         sd, threshold = recipe.resize_lora(
             tqdm(lora_layers, desc=f"Scoring {recipe}"),
             checkpoint,
             compute_kwargs=compute_kwargs,
             output_dtype=output_dtype,
+            fixed_size=passthrough_size,
         )
+        if passthrough and recipe.rescale != 1.0:
+            logger.warning(
+                "rescale=%s is not applied to the %d tensors copied unchanged",
+                format_float(recipe.rescale),
+                len(passthrough),
+            )
+        sd.update(passthrough)
 
         params = recipe.__dict__.copy()
         params["threshold"] = threshold

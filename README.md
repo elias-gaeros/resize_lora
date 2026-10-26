@@ -4,6 +4,8 @@ This tool compresses SDXL LoRA models by selectively reducing their rank (the nu
 
 This tool is primarily designed for **SDXL LoRA/LoCon models**. Support for other types (SD1.5, DoRA, LoKr, LoHa, etc.) is not currently included.
 
+Layers the tool cannot resize (LyCORIS `.diff` layers, LoHa/LoKr factors, layers without an SDXL base-layer mapping) are copied to the output unchanged and listed in a warning. The `size=` budget includes their bytes; `rescale` does not apply to them. When merging LoRAs, these layers are dropped instead.
+
 ## Table of Contents
 
 - [Features](#features)

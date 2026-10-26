@@ -1,5 +1,6 @@
 from collections import defaultdict
 from dataclasses import dataclass
+import json
 import logging
 import math
 import re
@@ -11,6 +12,7 @@ import safetensors.torch
 from .utils import cached, JsonCache
 from .num_utils import fast_decompose
 from .keymap import Target, build_keymap, read_shapes
+from .merge import core_space, ties, tucker2, tucker_spectrum
 
 
 __all__ = ["BaseCheckpoint", "PairedLoraModel", "JsonCache"]
@@ -190,6 +192,8 @@ class ConcatLoRAsDict:
         for lora, _ in self.loras_and_weights:
             for name, fmt in lora.layers.items():
                 self.layers.setdefault(name, LayerFormat(fmt.up, fmt.down, True))
+        if any(k.endswith(".dora_scale") for k in self.keys):
+            logging.warning("Merging drops the DoRA magnitudes (dora_scale)")
 
     def __getitem__(self, name):
         weights, alphas, ups, downs, _ = zip(
@@ -256,10 +260,108 @@ class ConcatLoRAsDict:
     def path(self):
         return self.loras_and_weights[0][0].path
 
+    def merge_params(self):
+        return {
+            "method": "sum",
+            "loras": [[lora.name, w] for lora, w in self.loras_and_weights],
+        }
+
     def metadata(self):
         # FIXME: what can we do here?
         # metadata is so messy I don't want to touch it
-        return self.loras_and_weights[0][0].metadata()
+        metadata = self.loras_and_weights[0][0].metadata() or {}
+        metadata["merge_params"] = json.dumps(self.merge_params())
+        return metadata
+
+
+class CtMLoRAsDict(ConcatLoRAsDict):
+    """Merge LoRAs by Compress then Merge (CtM; He et al., ICML 2026).
+
+    For each layer, the weighted LoRA products are written in shared orthonormal bases
+    (lossless) and decomposed into `CtMLoRA` components, whose norms the recipe scores
+    to choose the layer's rank k. A Tucker-2 decomposition then selects the
+    k-dimensional output and input subspaces that keep the most energy of all the
+    LoRAs, and the LoRAs' coordinates in these subspaces are summed, or TIES-merged
+    with density `ties`. When selecting the subspaces, `beta` moves each LoRA's norm
+    towards the mean norm: 1 keeps the norms, 0 equalizes them. A layer that only one
+    LoRA has, or that the others leave at zero, is resized like that LoRA alone.
+    """
+
+    def __init__(self, lora_paths_and_weights, beta=0.25, ties=None, **to_args):
+        super().__init__(lora_paths_and_weights, **to_args)
+        self.beta, self.ties = beta, ties
+
+    def decompose(self, name, target=None):
+        members, ups, downs = [], [], []
+        for i, (lora, w) in enumerate(self.loras_and_weights):
+            if name in lora.layers:
+                alpha, up, down, _ = lora[name]
+                scale = w if alpha is None else w * alpha / down.shape[0]
+                members.append(i)
+                ups.append(scale * up.flatten(start_dim=1))
+                downs.append(down.flatten(start_dim=1))
+        input_shape = down.shape[1:]
+
+        Q_up, Q_down, cores = core_space(ups, downs)
+        # The cores are small: their many SVDs run faster on the CPU than a GPU, and
+        # float64 lets Tucker-2 converge tightly.
+        cores = cores.to(device="cpu", dtype=torch.float64)
+        norms = torch.linalg.matrix_norm(cores)
+        nonzero = norms > 1e-6
+        if not nonzero.any():
+            return DecomposedLoRA(self, name, target)
+        # Untrained layers (zero LoRA product) take no part in the merge.
+        cores, norms = cores[nonzero], norms[nonzero]
+        members = [i for i, keep in zip(members, nonzero.tolist()) if keep]
+
+        P_up, P_down, S, up_cols, down_cols = tucker_spectrum(cores)
+        target_norms = self.beta * norms + (1 - self.beta) * norms.mean()
+        like_Q = dict(device=Q_up.device, dtype=Q_up.dtype)
+        return CtMLoRA(
+            name,
+            target,
+            self.layers[name],
+            input_shape,
+            basis_up=Q_up @ P_up.to(**like_Q),
+            basis_down=Q_down @ P_down.to(**like_Q),
+            S=S.to(dtype=Q_up.dtype),
+            paired=(up_cols, down_cols),
+            cores=P_up.T @ cores @ P_down,
+            basis_scales=target_norms / norms,
+            ties=self.ties,
+            members=[self.loras_and_weights[i][0].name for i in members],
+            rank_sum=sum(d.shape[0] for d in downs),
+        )
+
+    def log_subspace_error(self, layers):
+        """Log, for each LoRA, the norm its layers lose to the CtM subspaces."""
+        sums = {lora.name: [0.0, 0.0] for lora, _ in self.loras_and_weights}
+        for layer in layers:
+            for name, total, lost in getattr(layer, "errors_sq", []):
+                sums[name][0] += total
+                sums[name][1] += lost
+        logging.info(
+            "CtM subspace error over all layers: %s",
+            ", ".join(
+                f"{name} {100 * math.sqrt(lost / total):.2f}%"
+                for name, (total, lost) in sums.items()
+                if total > 0
+            ),
+        )
+
+    @property
+    def name(self):
+        tag = ["ctm", f"b{self.beta:g}"]
+        if self.ties is not None:
+            tag.append(f"ties{self.ties:g}")
+        return f"{super().name}_{'-'.join(tag)}"
+
+    def merge_params(self):
+        return super().merge_params() | {
+            "method": "ctm",
+            "beta": self.beta,
+            "ties": self.ties,
+        }
 
 
 class PairedLoraModel:
@@ -294,6 +396,23 @@ class PairedLoraModel:
                 "%d LoRA layers do not have the shape of their base layer: %s",
                 len(self.mismatched),
                 _names_for_log(self.mismatched),
+            )
+        # ComfyUI keeps one patch per target, e.g. when merged LoRAs name a layer in
+        # kohya and PEFT style. Slices of a fused weight are distinct targets.
+        names_by_target = defaultdict(list)
+        for name, target in self.targets.items():
+            names_by_target[target].append(name)
+        shared = [
+            " and ".join(sorted(names))
+            for names in names_by_target.values()
+            if len(names) > 1
+        ]
+        if shared:
+            logging.warning(
+                "%d base layers are modified by several LoRA layers, of which ComfyUI "
+                "applies only one: %s",
+                len(shared),
+                _names_for_log(shared),
             )
 
         # Tensors outside the resizable layers (LyCORIS .diff, LoHa/LoKr factors,
@@ -338,6 +457,8 @@ class PairedLoraModel:
         return {k: self.lora_dict.lora_fd.get_tensor(k) for k in self.passthrough_keys}
 
     def decompose_layer(self, lora_key, **kwargs):
+        if isinstance(self.lora_dict, CtMLoRAsDict):
+            return self.lora_dict.decompose(lora_key, self.targets[lora_key])
         return DecomposedLoRA(
             self.lora_dict, lora_key, self.targets[lora_key], **kwargs
         )
@@ -379,6 +500,10 @@ class DecomposedLoRA:
             S = S[mask]
             Vh = Vh[mask]
             U = U[:, mask]
+        return self._factors_statedict(U, S, Vh, rescale, **kwargs)
+
+    def _factors_statedict(self, U, S, Vh, rescale, **kwargs):
+        """The tensors of the LoRA layer U @ diag(S) @ Vh, multiplied by `rescale`."""
         dim = S.shape[0]
         if dim == 0:
             return {}
@@ -422,3 +547,98 @@ class DecomposedLoRA:
         self.S = self.S.to(**kwargs)
         self.U = self.U.to(**kwargs)
         return self
+
+
+class CtMLoRA(DecomposedLoRA):
+    """A layer of several LoRAs, decomposed into the components CtM merges.
+
+    basis_up (m, a) and basis_down (n_in, b) hold the higher-order SVD directions, and
+    `cores` (T, a, b) each LoRA in these bases. Component i pairs U[:, i] and Vh[i],
+    columns `paired` of the bases, and S[i] is its norm from `tucker_spectrum`: recipes
+    score S as the singular values of a single LoRA. `statedict` merges the LoRAs into
+    as many dimensions as `mask` keeps, but not necessarily the masked ones.
+    """
+
+    def __init__(
+        self,
+        name,
+        target,
+        fmt,
+        input_shape,
+        basis_up,
+        basis_down,
+        S,
+        paired,
+        cores,
+        basis_scales,
+        ties,
+        members,
+        rank_sum,
+    ):
+        self.name, self.target, self.format = name, target, fmt
+        self.input_shape = input_shape
+        self.basis_up, self.basis_down, self.S = basis_up, basis_down, S
+        self.up_cols, self.down_cols = paired
+        self.cores, self.basis_scales = cores, basis_scales
+        self.ties, self.members, self.rank_sum = ties, members, rank_sum
+        self.alpha_factor = 1.0
+        self.dora_scale = None
+        # (LoRA name, squared norm, squared norm lost) for each LoRA, by the last statedict
+        self.errors_sq = []
+
+    @property
+    def U(self):
+        return self.basis_up[:, self.up_cols]
+
+    @property
+    def Vh(self):
+        return self.basis_down[:, self.down_cols].T
+
+    def dim_size(self, element_size=2):
+        return element_size * (self.basis_up.shape[0] + self.basis_down.shape[0])
+
+    def to(self, **kwargs):
+        self.basis_up = self.basis_up.to(**kwargs)
+        self.basis_down = self.basis_down.to(**kwargs)
+        self.S = self.S.to(**kwargs)
+        return self
+
+    def statedict(self, mask=None, rescale=1.0, **kwargs):
+        k = self.dim if mask is None else int(mask.sum())
+        total_sq = torch.linalg.matrix_norm(self.cores).square()
+        if k == 0:
+            self.errors_sq = list(
+                zip(self.members, total_sq.tolist(), total_sq.tolist())
+            )
+            return {}
+        # When the cores are not square, the larger side keeps its extra directions,
+        # as in tucker_spectrum, so that k = n loses nothing. The rank is still k.
+        a, b = self.cores.shape[1:]
+        n = min(a, b)
+        P_up, P_down = tucker2(
+            self.cores * self.basis_scales[:, None, None], (k + a - n, k + b - n)
+        )
+        small = P_up.T @ self.cores @ P_down
+        if self.ties is None or len(small) == 1:
+            merged = small.sum(0)
+        else:
+            merged = ties(small, self.ties)
+
+        lost_sq = (total_sq - torch.linalg.matrix_norm(small).square()).clamp(min=0)
+        self.errors_sq = list(zip(self.members, total_sq.tolist(), lost_sq.tolist()))
+        logging.debug(
+            "ctm dim:%3d->%-3d subspace rle: %s %s",
+            self.rank_sum,
+            k,
+            " ".join(
+                f"{name}:{100 * rle:.2f}%"
+                for name, rle in zip(self.members, (lost_sq / total_sq).sqrt().tolist())
+            ),
+            self.name,
+        )
+
+        Uc, Sc, Vhc = torch.linalg.svd(merged, full_matrices=False)
+        like_basis = dict(device=self.basis_up.device, dtype=self.basis_up.dtype)
+        U = self.basis_up @ (P_up @ Uc).to(**like_basis)
+        Vh = (Vhc @ P_down.T).to(**like_basis) @ self.basis_down.T
+        return self._factors_statedict(U, Sc.to(**like_basis), Vh, rescale, **kwargs)

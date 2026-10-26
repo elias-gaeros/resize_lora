@@ -15,6 +15,7 @@ from loralib import (
     DecomposedLoRA,
     LoRADict,
     ConcatLoRAsDict,
+    CtMLoRAsDict,
 )
 from loralib.metadata import precalculate_safetensors_hashes
 
@@ -207,6 +208,31 @@ class ResizeRecipe:
         return sd, threshold
 
 
+class MergeSpec:
+    """How comma-separated LoRAs are merged: `sum`, or `ctm[,beta=B][,ties=D]`."""
+
+    def __init__(self, spec_str):
+        self.spec_str = spec_str
+        self.method, *parts = spec_str.split(",")
+        if self.method not in ("sum", "ctm"):
+            raise ValueError(f"Unknown merge method {self.method} in {spec_str}")
+        self.params = {}
+        for part in parts:
+            key, _, value = part.partition("=")
+            if self.method != "ctm" or key not in ("beta", "ties"):
+                raise ValueError(f"Unknown key {key} in merge {spec_str}")
+            try:
+                value = float(value)
+            except ValueError:
+                raise ValueError(f"Could not parse {key}={value} in merge {spec_str}")
+            if not (0.0 <= value <= 1.0 if key == "beta" else 0.0 < value <= 1.0):
+                raise ValueError(f"{key}={value} is out of range in merge {spec_str}")
+            self.params[key] = value
+
+    def __str__(self):
+        return self.spec_str
+
+
 def process_lora_model(
     lora_model: PairedLoraModel,
     recipes: list[ResizeRecipe],
@@ -214,9 +240,13 @@ def process_lora_model(
     device=None,
     compute_dtype=torch.float32,
     output_dtype=torch.float16,
+    saved_paths=None,
 ):
+    """saved_paths: paths saved earlier in this run, which are not overwritten"""
     compute_kwargs = dict(dtype=compute_dtype, device=device, non_blocking=True)
     checkpoint = lora_model.checkpoint
+    saved_paths = set() if saved_paths is None else saved_paths
+    is_ctm = isinstance(lora_model.lora_dict, CtMLoRAsDict)
 
     lora_layers = []
     for key in tqdm(lora_model.keys(), desc="SVD"):
@@ -242,6 +272,11 @@ def process_lora_model(
     passthrough_size = sum(v.numel() * v.element_size() for v in passthrough.values())
 
     for recipe in recipes:
+        if is_ctm and recipe.weights["subspace"] != 0.0:
+            logger.warning(
+                "With -m ctm, %s sets how many dimensions each layer keeps, not which",
+                recipe,
+            )
         sd, threshold = recipe.resize_lora(
             tqdm(lora_layers, desc=f"Scoring {recipe}"),
             checkpoint,
@@ -249,6 +284,8 @@ def process_lora_model(
             output_dtype=output_dtype,
             fixed_size=passthrough_size,
         )
+        if is_ctm:
+            lora_model.lora_dict.log_subspace_error(lora_layers)
         if passthrough and recipe.rescale != 1.0:
             logger.warning(
                 "rescale=%s is not applied to the %d tensors copied unchanged",
@@ -275,6 +312,13 @@ def process_lora_model(
         output_path = output_folder / (
             f"{lora_model.lora_dict.name}_{recipe_fn}_th{format_float(threshold)}.safetensors"
         )
+        if output_path in saved_paths:
+            logger.error(
+                "Not saving %s: an earlier output of this run has the same name",
+                output_path,
+            )
+            continue
+        saved_paths.add(output_path)
 
         model_hash, legacy_hash = precalculate_safetensors_hashes(sd, metadata)
         metadata["sshs_model_hash"] = model_hash
@@ -288,13 +332,15 @@ def process_lora_model(
         )
 
 
-def load_lora_or_merge(path, **to_kwargs):
+def load_lora_or_merge(path, merge=None, **to_kwargs):
     if "," in path:
         members = []
         for path_entry in path.split(","):
             path_val, _, weight = path_entry.partition(":")
             weight = float(weight) if weight else 1.0
             members.append((path_val, weight))
+        if merge is not None and merge.method == "ctm":
+            return CtMLoRAsDict(members, **merge.params, **to_kwargs)
         return ConcatLoRAsDict(members, **to_kwargs)
     else:
         return LoRADict(path, **to_kwargs)
@@ -353,6 +399,14 @@ def main():
         help="Score recipes separated by ':' in the format spn_ckpt=X,spn_lora=Y,subspace=Z,size=S:spn_ckpt=...",
     )
     parser.add_argument(
+        "-m",
+        "--merge",
+        type=str,
+        default="sum",
+        help="How comma-separated LoRAs are merged, several methods separated by ':': "
+        "'sum' or 'ctm[,beta=B][,ties=D]' (Compress then Merge)",
+    )
+    parser.add_argument(
         "-v",
         "--verbose",
         action="count",
@@ -366,44 +420,60 @@ def main():
 
     output_dtype = torch.float16 if args.output_dtype == "16" else torch.float32
     score_recipes = [ResizeRecipe(recipe) for recipe in args.score_recipes.split(":")]
+    merge_specs = [MergeSpec(spec) for spec in args.merge.split(":")]
 
     norms_cache = JsonCache(Path(__file__).parent / "norms_cache.json")
     checkpoint = BaseCheckpoint(args.checkpoint_path, cache=norms_cache)
 
+    saved_paths = set()
     for lora_model_path in args.lora_model_paths:
-        logger.info(f"Processing LoRA model: {lora_model_path}")
-        lora_dict = load_lora_or_merge(
-            lora_model_path, device=args.device, dtype=torch.float32
-        )
-        output_folder_path = lora_dict.path.parent
-        if args.output_folder:
-            output_folder_path = Path(args.output_folder)
-        paired = PairedLoraModel(lora_dict, checkpoint)
-        if not lora_dict.layers:
-            logger.error(
-                "Skipping %s: it has no low-rank layer (LoHa, LoKr and other adapters "
-                "are not resized).",
+        if "," in lora_model_path:
+            merges = merge_specs
+        else:
+            if args.merge != "sum":
+                logger.warning(
+                    "--merge is ignored for %s, which is a single LoRA", lora_model_path
+                )
+            merges = [None]
+        for merge in merges:
+            logger.info(
+                "Processing LoRA model: %s%s",
                 lora_model_path,
+                f" (merge: {merge})" if merge else "",
             )
-            continue
-        # A wrong base model still matches some layers by name and shape.
-        if 2 * len(paired.targets) < len(lora_dict.layers):
-            logger.error(
-                "Skipping %s: only %d of its %d LoRA layers match %s. "
-                "Is it the LoRA's base model?",
-                lora_model_path,
-                len(paired.targets),
-                len(lora_dict.layers),
-                checkpoint.path.name,
+            lora_dict = load_lora_or_merge(
+                lora_model_path, merge, device=args.device, dtype=torch.float32
             )
-            continue
-        process_lora_model(
-            lora_model=paired,
-            recipes=score_recipes,
-            output_folder=output_folder_path,
-            output_dtype=output_dtype,
-            device=args.device,
-        )
+            output_folder_path = lora_dict.path.parent
+            if args.output_folder:
+                output_folder_path = Path(args.output_folder)
+            paired = PairedLoraModel(lora_dict, checkpoint)
+            if not lora_dict.layers:
+                logger.error(
+                    "Skipping %s: it has no low-rank layer (LoHa, LoKr and other "
+                    "adapters are not resized).",
+                    lora_model_path,
+                )
+                break
+            # A wrong base model still matches some layers by name and shape.
+            if 2 * len(paired.targets) < len(lora_dict.layers):
+                logger.error(
+                    "Skipping %s: only %d of its %d LoRA layers match %s. "
+                    "Is it the LoRA's base model?",
+                    lora_model_path,
+                    len(paired.targets),
+                    len(lora_dict.layers),
+                    checkpoint.path.name,
+                )
+                break
+            process_lora_model(
+                lora_model=paired,
+                recipes=score_recipes,
+                output_folder=output_folder_path,
+                output_dtype=output_dtype,
+                device=args.device,
+                saved_paths=saved_paths,
+            )
 
     norms_cache.save(discard=True)
 

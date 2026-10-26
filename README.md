@@ -217,7 +217,7 @@ Here are the available methods and the reference magnitude they compare $\sigma_
 ### The `rescale` Factor
 
 - `rescale=<value>`: Multiplies all singular values $\sigma_i$ by `<value>` _before_ any scoring calculations. Default: `1.0`.
-  - Useful if you want to globally adjust the LoRA's strength during resizing. For example, `rescale=0.8` would resize a slightly weaker version of the LoRA, and thus prune more dimensions. This factor is baked into the final weights.
+  - Useful if you want to globally adjust the LoRA's strength during resizing. For example, `rescale=0.8` would resize a slightly weaker version of the LoRA, and thus prune more dimensions when the recipe scores against the base model. `spn_lora` and `fro_lora` compare the LoRA to itself, so the factor cancels out in them. This factor is baked into the final weights.
 
 ## Merging LoRAs
 
@@ -231,7 +231,7 @@ python resize_lora.py base.safetensors "style_lora:0.7,char_lora:0.7" -o merged 
 
 The number after each `:` multiplies that LoRA's change to the base model, like the strength it is loaded with in ComfyUI; an omitted weight is 1. LoRAs that each work at strength 1 can be too strong together, because their changes add up. Lowering every weight, for example to `0.7` each, weakens all of them, as lowering both strengths does when the LoRAs are loaded together. Unequal weights favour one LoRA, e.g. `"style_lora:0.4,char_lora:0.9"`.
 
-With `-m sum`, the merge makes the same change to the base model as loading the LoRAs together at these strengths, before the recipe resizes it. For recipes that score only against the base model (`spn_ckpt`, `fro_ckpt`, `subspace`, `params`), the same weight on every LoRA gives the same result as weights of 1 with the recipe's `rescale=` set to that weight; `spn_lora` and `fro_lora` score against the LoRA's own, weighted, norms, which `rescale=` does not change. With `-m ctm`, the weights also set how much of each layer's directions each LoRA gets, unless `beta=0`.
+With `-m sum`, the merge makes the same change to the base model as loading the LoRAs together at these strengths, before the recipe resizes it. The same weight on every LoRA gives the same result as weights of 1 with the recipe's `rescale=` set to that weight. With `-m ctm`, the weights also set how much of each layer's directions each LoRA gets, unless `beta=0`.
 
 ### Merge modes
 

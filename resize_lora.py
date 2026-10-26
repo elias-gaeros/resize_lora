@@ -78,10 +78,9 @@ class ResizeRecipe:
     def score_dims(self, decomposed_lora, checkpoint, **compute_kwargs):
         weights = self.weights
         target = decomposed_lora.target
-        S = decomposed_lora.S
+        # rescale applies before scoring, also to the references taken from the LoRA
+        S = decomposed_lora.S * self.rescale
         scores = torch.log10(S)
-        if self.rescale is not None:
-            scores += log10(self.rescale)
         if abs(weights["subspace"]) > 1e-6:
             W_base = checkpoint.get_weights(target).to(**compute_kwargs)
             scores -= weights["subspace"] * torch.log10(

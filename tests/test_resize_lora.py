@@ -337,6 +337,63 @@ def test_outputs_with_the_same_name_are_not_overwritten(tmp_path, caplog):
     assert "same name" in caplog.text
 
 
+@pytest.mark.parametrize("recipe", ["spn_lora=1,thr=-0.3", "fro_lora=1,thr=-0.6"])
+def test_rescale_cancels_in_scores_against_the_lora_itself(tmp_path, recipe):
+    torch.manual_seed(0)
+    base = _save(
+        tmp_path / "ckpt.safetensors", {next(iter(SDXL_BASE)): torch.randn(32, 32)}
+    )
+    lora_path = _save(
+        tmp_path / "lora.safetensors", _lora_layer(RESIZED, 32, 32, rank=8)
+    )
+    (tmp_path / "plain").mkdir()
+    (tmp_path / "rescaled").mkdir()
+
+    _, plain = _run(tmp_path / "plain", base, LoRADict(lora_path), recipe)
+    _, rescaled = _run(
+        tmp_path / "rescaled", base, LoRADict(lora_path), recipe + ",rescale=0.5"
+    )
+
+    rank = plain[f"{RESIZED}.lora_down.weight"].shape[0]
+    assert 0 < rank < 8
+    assert rescaled[f"{RESIZED}.lora_down.weight"].shape[0] == rank
+    torch.testing.assert_close(
+        _delta(rescaled, RESIZED), 0.5 * _delta(plain, RESIZED), rtol=1e-4, atol=1e-4
+    )
+
+
+@pytest.mark.parametrize("merge", [ConcatLoRAsDict, CtMLoRAsDict])
+def test_equal_merge_weights_are_a_rescale(tmp_path, merge):
+    torch.manual_seed(0)
+    base = _save(
+        tmp_path / "ckpt.safetensors", {next(iter(SDXL_BASE)): torch.randn(32, 32)}
+    )
+    paths = [
+        _save(tmp_path / f"{i}.safetensors", _lora_layer(RESIZED, 32, 32))
+        for i in range(2)
+    ]
+    recipe = "spn_lora=1,thr=-0.5"
+    (tmp_path / "weights").mkdir()
+    (tmp_path / "rescale").mkdir()
+
+    _, weighted = _run(
+        tmp_path / "weights", base, merge([(p, 0.5) for p in paths]), recipe
+    )
+    _, rescaled = _run(
+        tmp_path / "rescale",
+        base,
+        merge([(p, 1.0) for p in paths]),
+        recipe + ",rescale=0.5",
+    )
+
+    rank = weighted[f"{RESIZED}.lora_down.weight"].shape[0]
+    assert rank < 8
+    assert rescaled[f"{RESIZED}.lora_down.weight"].shape[0] == rank
+    torch.testing.assert_close(
+        _delta(weighted, RESIZED), _delta(rescaled, RESIZED), rtol=1e-4, atol=1e-4
+    )
+
+
 @pytest.mark.parametrize(
     "spec",
     ["mean", "sum,beta=0.5", "ctm,rank=4", "ctm,beta=2", "ctm,ties=0", "ctm,ties=x"],

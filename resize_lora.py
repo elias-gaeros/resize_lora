@@ -236,7 +236,7 @@ def process_lora_model(
 
         params = recipe.__dict__.copy()
         params["threshold"] = threshold
-        metadata = lora_model.lora_dict.metadata()
+        metadata = lora_model.lora_dict.metadata() or {}
         metadata["resize_params"] = json.dumps(params)
 
         recipe_fn = [

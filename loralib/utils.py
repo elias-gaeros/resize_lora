@@ -43,8 +43,8 @@ def cached(cache_name):
     Decorator to cache method results in self._cache.
 
     This decorator caches the results of a method in `self._cache` under a
-    specified cache name. Only the first argument of the method is used as the
-    cache key.
+    specified cache name. Only the first argument of the method, as a string, is
+    used as the cache key.
 
     Args:
         cache_name (str): The name of the cache within `self.cache`.
@@ -66,9 +66,10 @@ def cached(cache_name):
             cache = root_cache.get(cache_name)
             if cache is None:
                 cache = root_cache[cache_name] = {}
-            if key not in cache:
-                cache[key] = fun(self, key, *args, **kwargs)
-            return cache[key]
+            cache_key = str(key)
+            if cache_key not in cache:
+                cache[cache_key] = fun(self, key, *args, **kwargs)
+            return cache[cache_key]
 
         return update_wrapper(wrapper, fun)
 

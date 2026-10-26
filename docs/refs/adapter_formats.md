@@ -131,10 +131,10 @@ This mapping is why most community LoRAs work without modification. The system d
 
 ### Supported Adapter Formats & Tensor Suffixes
 
-> **Scope:** This section describes ComfyUI's loader. The experimental
-> `loralib.key_mapper.KeyMapper` recognizes only the suffixes listed in its `SUFFIXES`
-> set, and `resize_lora.py` remains limited to SDXL LoRA/LoCon. Loader support in
-> ComfyUI does not imply mapping or resizing support in this repository.
+> **Scope:** This section describes ComfyUI's loader. `resize_lora.py` resizes only the
+> plain low-rank formats (the LoRA up/down suffix pairs, with optional `.alpha` and
+> `.dora_scale`); other adapter tensors are copied unchanged. See
+> `docs/refs/keymapper design.md`.
 
 The specific adapter format is determined by the suffixes of the tensor keys, which are checked within `comfy.lora.load_lora` by iterating through the `weight_adapter` classes.
 

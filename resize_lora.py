@@ -76,25 +76,25 @@ class ResizeRecipe:
 
     def score_dims(self, decomposed_lora, checkpoint, **compute_kwargs):
         weights = self.weights
-        layer_name = decomposed_lora.name
+        target = decomposed_lora.target
         S = decomposed_lora.S
         scores = torch.log10(S)
         if self.rescale is not None:
             scores += log10(self.rescale)
         if abs(weights["subspace"]) > 1e-6:
-            W_base = checkpoint.get_weights(layer_name).to(**compute_kwargs)
+            W_base = checkpoint.get_weights(target).to(**compute_kwargs)
             scores -= weights["subspace"] * torch.log10(
                 decomposed_lora.compute_subspace_scales(W_base).abs().cpu()
             )
         if abs(weights["spn_ckpt"]) > 1e-6:
             scores -= weights["spn_ckpt"] * log10(
-                checkpoint.spectral_norm(layer_name, **compute_kwargs)
+                checkpoint.spectral_norm(target, **compute_kwargs)
             )
         if abs(weights["spn_lora"]) > 1e-6:
             scores -= weights["spn_lora"] * torch.log10(S[0])
         if abs(weights["fro_ckpt"]) > 1e-6:
             scores -= weights["fro_ckpt"] * log10(
-                checkpoint.frobenius_norm(layer_name, dtype=torch.float32)
+                checkpoint.frobenius_norm(target, dtype=torch.float32)
             )
         if abs(weights["fro_lora"]) > 1e-6:
             scores -= weights["fro_lora"] * torch.log10(torch.linalg.vector_norm(S))
@@ -146,6 +146,12 @@ class ResizeRecipe:
             )[order].cumsum(0)
             cum_sizes += fixed_size
             target_size_bytes = self.target_size * BYTES_IN_MEGABYTE
+            if fixed_size >= target_size_bytes:
+                logger.warning(
+                    "The tensors copied unchanged take %.3fM, more than the %sM target",
+                    fixed_size / BYTES_IN_MEGABYTE,
+                    format_float(self.target_size),
+                )
             if target_size_bytes < cum_sizes[-1]:
                 idx = torch.searchsorted(cum_sizes, target_size_bytes).item()
                 threshold = flat_scores[idx].item()
@@ -180,7 +186,7 @@ class ResizeRecipe:
                 err = 0.0 if torch.all(mask) else torch.linalg.vector_norm(S[~mask])
                 re_lora = err / torch.linalg.vector_norm(S)
                 re_ckpt = err / checkpoint.frobenius_norm(
-                    decomposed_lora.name, dtype=torch.float32
+                    decomposed_lora.target, dtype=torch.float32
                 )
                 logger.debug(
                     f"dim:{S.shape[0]:>3}->{mask.sum().item():<3}"
@@ -305,7 +311,12 @@ def main():
         description="Resizes multiple LoRAs with specified parameters.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("checkpoint_path", type=str, help="Path to the checkpoint file")
+    parser.add_argument(
+        "checkpoint_path",
+        type=str,
+        help="Base model file; separate several files with commas, e.g. a Flux "
+        "diffusion model and its text encoders",
+    )
     parser.add_argument(
         "lora_model_paths",
         type=str,
@@ -368,6 +379,24 @@ def main():
         if args.output_folder:
             output_folder_path = Path(args.output_folder)
         paired = PairedLoraModel(lora_dict, checkpoint)
+        if not lora_dict.layers:
+            logger.error(
+                "Skipping %s: it has no low-rank layer (LoHa, LoKr and other adapters "
+                "are not resized).",
+                lora_model_path,
+            )
+            continue
+        # A wrong base model still matches some layers by name and shape.
+        if 2 * len(paired.targets) < len(lora_dict.layers):
+            logger.error(
+                "Skipping %s: only %d of its %d LoRA layers match %s. "
+                "Is it the LoRA's base model?",
+                lora_model_path,
+                len(paired.targets),
+                len(lora_dict.layers),
+                checkpoint.path.name,
+            )
+            continue
         process_lora_model(
             lora_model=paired,
             recipes=score_recipes,

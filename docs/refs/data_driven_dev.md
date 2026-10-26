@@ -46,27 +46,24 @@ Summarize schemas before testing mappings:
 python summarize_sft_index.py compressed_sft_index.json --stats --sample 10
 ```
 
-Run the mapping harness with base checkpoints appropriate for the adapters:
+Pair the adapters with base checkpoints appropriate for them:
 
 ```sh
-python test_key_mapper.py compressed_sft_index.json \
-    /path/to/sdxl-base.safetensors /path/to/flux-base.safetensors -v
+python check_mapping.py /path/to/sdxl-base.safetensors \
+    /path/to/flux1-dev.safetensors,/path/to/clip_l.safetensors -l /path/to/loras -v
 ```
 
-The harness:
+`check_mapping.py` runs the pairing that `resize_lora.py` uses, on headers only. For
+each LoRA it chooses the base that pairs the most low-rank layers, then prints the
+paired, shape-mismatched and unmapped layer counts and the number of tensors that
+resizing would copy unchanged. `-v` lists the unpaired layer names with digits replaced
+by `N`. A base can be a JSON copy of a safetensors header, so a corpus can be checked
+against base models whose weights are not on disk; the header of a remote file can be
+read with two HTTP range requests (the 8-byte length, then the JSON).
 
-- classifies schemas using adapter suffix and checkpoint-prefix heuristics;
-- builds one `KeyMapper` per supplied base checkpoint;
-- scores each adapter schema by the fraction of unique module names mapped;
-- applies simple cross-architecture penalties;
-- reports frequent unmatched patterns and example rejections.
-
-The score is diagnostic. It does not load adapter tensors, validate shapes, apply the
-adapter, or compare generated output. Shared schemas are tested once, so the report is
-weighted by schema unless file counts are inspected separately.
-
-Use `--debug-key RAW_KEY` to inspect suffix stripping and lookup for one key, or
-`--trace-key MODULE_NAME` to inspect the limited generator tracing currently available.
+A pairing requires a matching name and matching input and output sizes, so a shape
+mismatch indicates a wrong rule or a wrong base. The check does not apply the adapter
+or compare generated output.
 
 ## Extract Review Fixtures
 
@@ -83,6 +80,20 @@ format coverage. `--limit 0` writes every unique schema. Fingerprints are SHA-25
 of sorted tensor names; tensor shapes and metadata do not affect deduplication.
 
 ## Validation Snapshot
+
+On 2026-10-26, `check_mapping.py` paired 493 readable files from
+`~kade/wolfy/models/loras/`, `~kade/wolfy/models/loras-piezo/` and
+`/mnt/old_root/home/kade/diffusion/comfy/loras/` with the headers of Chroma1-HD,
+Flux.2 Klein base 4B, Flux.1 dev and schnell, SDXL base 1.0, SD1.5, SD3.5 Large and
+Medium, and Wan 2.1 T2V 1.3B, T2V 14B and I2V 14B. 9 further files could not be opened.
+
+- 125,538 of 125,682 low-rank layers paired, with no shape mismatch.
+- The 144 unpaired layers are the CLIP-L layers of two kohya Flux LoRAs. With a CLIP-L
+  header added to the Flux base, both files pair completely.
+- 77 files contain no plain low-rank layer: LoKr (noob, pony, SD3.5, IL), Klein files
+  with `.R`/`.scale` tensors, and one with `lora_proj_down`/`lora_proj_up`.
+- The SD UNet ldm-to-diffusers names were compared with sd-mecha's model configs: all
+  794 SDXL and 282 SD1 UNet matrices convert to the diffusers names with equal shapes.
 
 On 2026-06-21, the corpus at `~kade/wolfy/models/loras/` contained 402 safetensors
 files. Header extraction found 42 unique key schemas across seven top-level families.
@@ -102,5 +113,6 @@ A mapping change should satisfy all of the following:
 1. `pytest -q` passes with a focused regression for the changed convention.
 2. `python -m compileall -q .` succeeds.
 3. Raw/compressed index round-trip equality remains true on the review corpus.
-4. Mapping coverage does not regress for relevant schemas and base checkpoints.
+4. `check_mapping.py` coverage does not regress and reports no shape mismatch for
+   relevant LoRAs and base checkpoints.
 5. New unmatched formats are documented rather than counted as successful mappings.

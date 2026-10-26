@@ -75,19 +75,16 @@ This mapping happens in files like `comfy/sd.py` and `comfy/model_management.py`
 
 ### How This Relates to Our Tools and Your Goal
 
-The tools we have been building (like `loralib`, `sdxl_mapper.py`, `resize_lora.py`) are essentially **a microcosm of ComfyUI's own loading strategy.**
-
-*   **`sdxl_mapper.py` (`get_multi_format_lora_keys`)**: This is our "Rosetta Stone". It embodies the same principle as ComfyUI's mappers. It starts with a ground-truth key (LDM style) and generates a list of all known aliases for that key from different training scripts and formats (`lora_te1_...`, `lora_unet_...`, etc.). This is exactly what a generic tool needs.
-
-*   **`loralib/init.py` (`BaseCheckpoint` class)**: When this class initializes, it builds two critical mapping dictionaries:
-    *   `base2lora`: Maps an LDM key to its possible LoRA aliases.
-    *   `lora2base`: Maps any known LoRA alias *back* to its canonical LDM base key. This is the **most important map for a generic tool**. It allows you to take any LoRA file, read a key like `lora_unet_down_blocks_0_attentions_0_proj_in`, and instantly know it corresponds to the L-D-M-style key `model.diffusion_model.input_blocks.1.1.proj_in.weight`.
-
-*   **`resize_lora.py` and `wd_to_lora.py`**: These scripts *use* this system. `resize_lora.py` uses the `PairedLoraModel` (which relies on `BaseCheckpoint`) to correctly associate a LoRA layer with its corresponding base model weight for scoring. `wd_to_lora.py`, in its simplified form, did a crude, hardcoded mapping (`f"diffusion_model.{lora_key_base}"`), which highlights why a flexible mapping system like `sdxl_mapper.py` is necessary for true generic compatibility.
+`loralib/keymap.py` follows the same strategy as ComfyUI's loader. It takes the base
+checkpoint's tensor names as ground truth, renames them into ComfyUI's namespace, and
+generates every adapter name that ComfyUI accepts for each of them (`lora_te1_…`,
+`lora_unet_…`, diffusers, PEFT, LyCORIS). `BaseCheckpoint` exposes the result as
+`keymap`, from adapter module name to base matrix, and `PairedLoraModel` uses it to
+pair each LoRA layer with the weight it modifies. See `docs/refs/keymapper design.md`.
 
 To write a generic tool that works on any checkpoint or adapter, you must emulate this pattern:
 
 1.  **Choose your internal "ground truth" format.** The LDM/A1111 scheme is the most logical choice as it is ComfyUI's standard.
-2.  **Build a mapping layer.** This is a function or class that can translate keys from any known format (Diffusers, various LoRA scripts) *to* your ground truth format. Our `sdxl_mapper.py` is an excellent starting point for this.
+2.  **Build a mapping layer.** This is a function or class that can translate keys from any known format (Diffusers, various LoRA scripts) *to* your ground truth format. `loralib/keymap.py` implements this layer.
 3.  **Process all inputs through the mapping layer.** When your tool loads a file, it should create a unified view of that file using the standardized keys, regardless of how they were named on disk.
 4.  **Operate on the unified view.** All your core logic should only ever have to deal with one set of key names—your internal standard. This dramatically simplifies everything that follows.

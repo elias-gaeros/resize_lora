@@ -545,7 +545,7 @@ This phase focuses on robustness, completeness, and user experience.
   - `File: ComfyUI/comfy/lora.py`: **Primary source.** The `model_lora_keys_unet` and `model_lora_keys_clip` functions contain the definitive, most mapping logic from various LoRA formats to canonical ComfyUI keys. This logic must be ported and generalized.
   - `File: docs/refs/adapter_formats.md`: Provides a human-readable summary of the key mapping logic, including the two-stage (prefix-based and direct-map) strategy. Essential for understanding the _why_.
   - `File: docs/refs/checkpoint_formats.md`: Explains the difference between LDM/A1111 and Diffusers naming schemes, which is the core problem the `KeyMapper` solves.
-  - `File: loralib/sdxl_mapper.py`: The existing, simplified key mapper. Serves as a starting point and a reference for what needs to be expanded upon.
+  - `File: loralib/keymap.py`: The current key map, described in `docs/refs/keymapper design.md`.
 
 - **Task: Implement `ReferenceModel`**
 

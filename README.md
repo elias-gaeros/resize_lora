@@ -1,10 +1,16 @@
 # LoRA Resize Tool
 
-This tool compresses SDXL LoRA models by selectively reducing their rank (the number of internal dimensions). It goes beyond simple truncation by using methods to score the importance of each dimension, comparing the LoRA's characteristics against the original base model checkpoint. This context-aware approach helps preserve the LoRA's essential effects while significantly reducing file size.
+This tool compresses LoRA models by selectively reducing their rank (the number of internal dimensions). It goes beyond simple truncation by using methods to score the importance of each dimension, comparing the LoRA's characteristics against the original base model checkpoint. This context-aware approach helps preserve the LoRA's essential effects while significantly reducing file size.
 
-This tool is primarily designed for **SDXL LoRA/LoCon models**. Support for other types (SD1.5, DoRA, LoKr, LoHa, etc.) is not currently included.
+It resizes the low-rank layers (LoRA, LoCon, DoRA) of the LoRA files ComfyUI loads, and pairs them with the base model the same way ComfyUI does:
 
-Layers the tool cannot resize (LyCORIS `.diff` layers, LoHa/LoKr factors, layers without an SDXL base-layer mapping) are copied to the output unchanged and listed in a warning. The `size=` budget includes their bytes; `rescale` does not apply to them. When merging LoRAs, these layers are dropped instead.
+- **Base models:** SD1.x, SD2.x, SDXL and its finetunes, SD3 and SD3.5, Flux.1, Chroma, Flux.2 Klein, Wan, and other diffusion models whose LoRAs use the checkpoint's own layer names.
+- **Layer names:** ComfyUI's own (`diffusion_model.…`, `text_encoders.…`), kohya (`lora_unet_…`, `lora_te1_…`), diffusers and PEFT (`unet.…`, `transformer.…`, `text_encoder.…`) for SD/SDXL UNets, SD3 and Flux.1, and LyCORIS (`lycoris_…`).
+- **Tensor names:** `lora_up`/`lora_down`, `lora_B`/`lora_A`, `lora.up`/`lora.down` and the other low-rank suffixes ComfyUI accepts, with or without `.alpha`. The output keeps the input's names and suffixes.
+
+Diffusers names for other architectures (HunyuanVideo, Qwen-Image, Z-Image, AuraFlow, PixArt) are not mapped. LoHa, LoKr, OFT and other adapters that are not a product of two matrices are not resized.
+
+Tensors the tool cannot resize (LyCORIS `.diff` layers, LoHa/LoKr factors, layers without a base-layer mapping or whose shape differs from it) are copied to the output unchanged and listed in a warning. The `size=` budget includes their bytes; `rescale` does not apply to them. When merging LoRAs, these tensors are dropped instead. A LoRA with no low-rank layer, or with fewer than half of its low-rank layers matching the base model, is skipped with an error.
 
 ## Table of Contents
 
@@ -33,7 +39,7 @@ Layers the tool cannot resize (LyCORIS `.diff` layers, LoHa/LoKr factors, layers
 
 ## Features
 
-- **SDXL Focused**: Optimized for SDXL LoRA and LoCon models.
+- **ComfyUI Compatible**: Accepts the LoRA layer names ComfyUI loads, for every base model listed above.
 - **Base Model Aware**: Uses weights from the base model checkpoint for more robust dimension scoring.
 - **Flexible Scoring**: Combine multiple metrics (comparing LoRA to itself, to the base model, considering parameter efficiency) using weighted recipes.
 - **Target Size or Threshold**: Prune dimensions based on a specific target file size (`size=`) or a direct importance score threshold (`thr=`).
@@ -71,11 +77,13 @@ pip install torch safetensors tqdm
 python resize_lora.py /path/to/sdxl_base_v1.0.safetensors /path/to/my_lora.safetensors -o /path/to/output/folder
 ```
 
-This command uses the default recipe (`fro_ckpt=1,thr=-3.5`). It compresses the LoRA by keeping only the dimensions whose "strength" (singular value) is greater than roughly 1/16th ($10^{-1.2}$) of the "maximum strength" (spectral norm) of the corresponding layer in the base SDXL model.
+This command uses the default recipe (`fro_ckpt=1,thr=-3.5`). It compresses the LoRA by keeping only the dimensions whose "strength" (singular value) is greater than roughly 1/16th ($10^{-1.2}$) of the "maximum strength" (spectral norm) of the corresponding layer in the base model.
 
 ### Arguments
 
 - `checkpoint_path` (positional): Path to the base model checkpoint file (e.g., SDXL 1.0 base).
+  - A base model split across files takes them all, separated by commas: `flux1-dev.safetensors,clip_l.safetensors,t5xxl_fp16.safetensors`. Text encoder layers of a LoRA are only resized when their text encoder is given; otherwise they are copied unchanged.
+  - Full checkpoints, ComfyUI diffusion-model files and "fp8 scaled" files are accepted. GGUF, SVDQuant and 4-bit (block-scaled) files are not.
 - `lora_model_paths` (positional): Path(s) to the LoRA model files.
   - You can specify multiple files: `lora1.safetensors lora2.safetensors`.
   - You can use wildcards (shell expanded): `loras/*.safetensors`.
@@ -287,17 +295,27 @@ This caching mechanism speeds up processing after the first run, particularly wh
 
 ## Indexing and Key-Mapping Tools
 
-The repository also contains development tools for inspecting safetensors schemas and
-evaluating adapter-key mappings. These tools are separate from the SDXL resize path;
-`resize_lora.py` still uses its existing SDXL mapper.
+`check_mapping.py` reports how the low-rank layers of LoRA files pair with base models,
+reading headers only. Each LoRA is paired with the base that maps most of its layers:
 
-Create a raw header-only index without loading tensor payloads:
+```sh
+python check_mapping.py sdxl_base.safetensors flux1-dev.safetensors,clip_l.safetensors \
+    -l /path/to/loras -v
+```
+
+Each output line gives the paired, shape-mismatched and unmapped layer counts, the
+number of tensors that would be copied unchanged, and the chosen base. `-v` lists the
+unpaired layer names with digits replaced by `N`. A base can also be a JSON copy of a
+safetensors header, which lets a corpus be checked without downloading the weights.
+
+The other tools inspect safetensors schemas. Create a raw header-only index without
+loading tensor payloads:
 
 ```sh
 python index_safetensors.py /path/to/models /path/to/loras -o sft_index.json
 ```
 
-Compress the index for the summary and mapping harnesses:
+Compress the index for the summary tool:
 
 ```sh
 python - <<'PY'
@@ -311,13 +329,7 @@ Path("compressed_sft_index.json").write_text(
     json.dumps(compressed), encoding="utf-8"
 )
 PY
-```
-
-Inspect its schemas or evaluate them against one or more base checkpoints:
-
-```sh
 python summarize_sft_index.py compressed_sft_index.json --stats --sample 5
-python test_key_mapper.py compressed_sft_index.json /path/to/base.safetensors -v
 ```
 
 To create a small, diverse, duplicate-free key fixture from a large LoRA corpus:
@@ -330,13 +342,7 @@ python extract_lora_keys.py /path/to/loras -o lora_key_fixtures.json --limit 24
 paths only, not tensor data. The source paths may still disclose local filenames, so
 review the JSON before publishing it.
 
-The experimental `loralib.key_mapper.KeyMapper` currently recognizes selected SD,
-SDXL, SD3.5, FLUX/Chroma, Diffusers, PEFT, LyCORIS, and SVDQuant naming patterns.
-Recognition is base-model-dependent and is not a claim that every adapter algorithm
-can be resized. In particular, schemas using Klein `.R` and normalization `.scale`
-keys are indexed as `unknown` and are not mapped.
-
-See [the key-mapper design](docs/refs/keymapper%20design.md) and
+See [the key-map design](docs/refs/keymapper%20design.md) and
 [the data-driven QA workflow](docs/refs/data_driven_dev.md) for implementation details
 and current validation scope.
 

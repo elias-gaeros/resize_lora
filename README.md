@@ -455,6 +455,8 @@ and current validation scope.
 
 LoRAs from steps 2 and 3 should give similar results. Evaluation of `spn_ckpt` scoring compares step 1 against steps 2 and 3.
 
+Thanks to [Kumaravelu, Gupta and Srijith](https://arxiv.org/abs/2604.27796) for taking it from here and running the experiments on vision and language models.
+
 ## License
 
 This project is licensed under the MIT License. See the `LICENSE` file for details.
